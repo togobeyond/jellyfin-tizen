@@ -21,11 +21,37 @@
         return deviceId;
     }
 
+    function getModelName() {
+        try {
+            if (typeof webapis !== 'undefined' && webapis.productinfo
+                && typeof webapis.productinfo.getModel === 'function') {
+                var model = webapis.productinfo.getModel();
+
+                if (model) {
+                    return 'Samsung ' + model;
+                }
+            }
+        } catch (err) {
+            console.warn('Unable to read TV model', err);
+        }
+
+        return 'Samsung Smart TV';
+    }
+
+    function getAppVersion() {
+        try {
+            return tizen.application.getCurrentApplication().appInfo.version;
+        } catch (err) {
+            console.warn('Unable to read app version', err);
+            return '0.3.5';
+        }
+    }
+
     var AppInfo = {
         deviceId: getDeviceId(),
-        deviceName: 'Samsung Smart TV',
+        deviceName: getModelName(),
         appName: 'Jellyfin for Tizen',
-        appVersion: tizen.application.getCurrentApplication().appInfo.version
+        appVersion: getAppVersion()
     };
 
     // List of supported features
@@ -42,10 +68,34 @@
         'screensaver',
         'multiserver',
         'subtitleappearancesettings',
-        'subtitleburnsettings'
+        'subtitleburnsettings',
+        'displaymode'
     ];
 
     var systeminfo;
+
+    function getProductInfo() {
+        try {
+            if (typeof webapis !== 'undefined' && webapis.productinfo) {
+                return webapis.productinfo;
+            }
+        } catch (err) {
+            console.warn('Unable to access productinfo', err);
+        }
+
+        return null;
+    }
+
+    function isPanelSupported(name) {
+        var productInfo = getProductInfo();
+
+        try {
+            return !!productInfo && typeof productInfo[name] === 'function' && productInfo[name]();
+        } catch (err) {
+            console.warn('Unable to call productinfo.' + name, err);
+            return false;
+        }
+    }
 
     function getSystemInfo() {
         if (systeminfo) {
@@ -53,17 +103,17 @@
         }
 
         return new Promise(function (resolve) {
-            tizen.systeminfo.getPropertyValue('DISPLAY', function (result) {
+            function resolveDisplay(result) {
                 var devicePixelRatio = 1;
 
-                if (typeof webapis.productinfo.is8KPanelSupported === 'function' && webapis.productinfo.is8KPanelSupported()){
-                    console.log("8K UHD is supported");
+                if (isPanelSupported('is8KPanelSupported')) {
+                    console.log('8K UHD is supported');
                     devicePixelRatio = 4;
-                } else if (typeof webapis.productinfo.isUdPanelSupported === 'function' && webapis.productinfo.isUdPanelSupported()){
-                    console.log("4K UHD is supported");
+                } else if (isPanelSupported('isUdPanelSupported')) {
+                    console.log('4K UHD is supported');
                     devicePixelRatio = 2;
                 } else {
-                    console.log("UHD is not supported");
+                    console.log('UHD is not supported');
                 }
 
                 systeminfo = Object.assign({}, result, {
@@ -71,9 +121,59 @@
                     resolutionHeight: Math.floor(result.resolutionHeight * devicePixelRatio)
                 });
 
-                resolve(systeminfo)
-            });
+                resolve(systeminfo);
+            }
+
+            try {
+                tizen.systeminfo.getPropertyValue('DISPLAY', resolveDisplay, function (err) {
+                    console.warn('Unable to read display information', err);
+                    resolveDisplay({ resolutionWidth: 1920, resolutionHeight: 1080 });
+                });
+            } catch (err) {
+                console.warn('Unable to read display information', err);
+                resolveDisplay({ resolutionWidth: 1920, resolutionHeight: 1080 });
+            }
         });
+    }
+
+    var screenLocked = false;
+    var screenWanted = false;
+
+    function requestScreenLock() {
+        if (screenLocked || typeof tizen.power === 'undefined') {
+            return;
+        }
+
+        try {
+            tizen.power.request('SCREEN', 'SCREEN_NORMAL');
+            screenLocked = true;
+        } catch (err) {
+            console.warn('Unable to keep the screen awake', err);
+        }
+    }
+
+    function releaseScreenLock() {
+        if (!screenLocked || typeof tizen.power === 'undefined') {
+            return;
+        }
+
+        try {
+            tizen.power.release('SCREEN');
+        } catch (err) {
+            console.warn('Unable to release the screen lock', err);
+        } finally {
+            screenLocked = false;
+        }
+    }
+
+    function keepScreenAwake() {
+        screenWanted = true;
+        requestScreenLock();
+    }
+
+    function releaseScreen() {
+        screenWanted = false;
+        releaseScreenLock();
     }
 
     function postMessage() {
@@ -121,12 +221,13 @@
 
             getDeviceProfile: function (profileBuilder) {
                 postMessage('AppHost.getDeviceProfile');
-                return profileBuilder({ enableMkvProgressive: false, enableSsaRender: true });
+                // Used by the HTML5 player (music, photos, AVPlay fallback).
+                return profileBuilder({ enableSsaRender: true });
             },
 
             getSyncProfile: function (profileBuilder) {
                 postMessage('AppHost.getSyncProfile');
-                return profileBuilder({ enableMkvProgressive: false });
+                return profileBuilder({});
             },
 
             screen: function () {
@@ -152,15 +253,17 @@
 
         enableFullscreen: function () {
             postMessage('enableFullscreen');
+            keepScreenAwake();
         },
 
         disableFullscreen: function () {
             postMessage('disableFullscreen');
+            releaseScreen();
         },
 
         getPlugins: function () {
             postMessage('getPlugins');
-            return [];
+            return ['AvplayVideoPlayer'];
         },
 
         openUrl: function (url, target) {
@@ -172,31 +275,74 @@
 
         updateMediaSession: function (mediaInfo) {
             postMessage('updateMediaSession', { mediaInfo: mediaInfo });
+            keepScreenAwake();
         },
 
         hideMediaSession: function () {
             postMessage('hideMediaSession');
+            releaseScreen();
         }
     };
 
-    window.addEventListener('load', function () {
-        tizen.tvinputdevice.registerKey('MediaPlay');
-        tizen.tvinputdevice.registerKey('MediaPause');
-        tizen.tvinputdevice.registerKey('MediaStop');
-        tizen.tvinputdevice.registerKey('MediaTrackPrevious');
-        tizen.tvinputdevice.registerKey('MediaTrackNext');
-        tizen.tvinputdevice.registerKey('MediaRewind');
-        tizen.tvinputdevice.registerKey('MediaFastForward');
-    });
-
-    function updateKeys() {
-        if (location.hash.indexOf('/queue') !== -1 || location.hash.indexOf('/video') !== -1) {
-            // Disable on-screen playback control, if available on the page
-            tizen.tvinputdevice.registerKey('MediaPlayPause');
-        } else {
-            tizen.tvinputdevice.unregisterKey('MediaPlayPause');
+    function registerKey(key) {
+        try {
+            if (tizen.tvinputdevice) {
+                tizen.tvinputdevice.registerKey(key);
+            }
+        } catch (err) {
+            console.warn('Unable to register key ' + key, err);
         }
     }
 
+    function unregisterKey(key) {
+        try {
+            if (tizen.tvinputdevice) {
+                tizen.tvinputdevice.unregisterKey(key);
+            }
+        } catch (err) {
+            console.warn('Unable to unregister key ' + key, err);
+        }
+    }
+
+    var mediaKeys = [
+        'MediaPlay',
+        'MediaPause',
+        'MediaStop',
+        'MediaTrackPrevious',
+        'MediaTrackNext',
+        'MediaRewind',
+        'MediaFastForward'
+    ];
+
+    function updateKeys() {
+        var inPlayback = location.hash.indexOf('/queue') !== -1
+            || location.hash.indexOf('/video') !== -1
+            || location.hash.indexOf('/playback') !== -1;
+
+        if (inPlayback) {
+            // Handle play/pause in the web player
+            registerKey('MediaPlayPause');
+        } else {
+            unregisterKey('MediaPlayPause');
+        }
+    }
+
+    window.addEventListener('load', function () {
+        mediaKeys.forEach(registerKey);
+        updateKeys();
+    });
+
     window.addEventListener('viewshow', updateKeys);
+    window.addEventListener('hashchange', updateKeys);
+
+    // Don't keep the screen awake while the app is in the background
+    document.addEventListener('visibilitychange', function () {
+        if (document.hidden) {
+            releaseScreenLock();
+        } else if (screenWanted) {
+            requestScreenLock();
+        }
+    });
+
+    window.addEventListener('beforeunload', releaseScreen);
 })();

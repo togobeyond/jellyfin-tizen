@@ -1,0 +1,41 @@
+/*
+ * AVPlay renders video in its own plane. The <object> below is the hole in
+ * the page that plane is drawn into, so it must stay above the page
+ * background but below jellyfin-web's OSD (z-index: 1).
+ */
+.avplayVideoPlayer {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    background: #000;
+    border: 0;
+}
+
+body.hide-scroll .avplayVideoPlayer {
+    overflow: hidden;
+}
+
+/* Subtitles are rendered by the AVPlay plugin in the DOM, so they work with
+ * both progressive and HLS playback. */
+.avplaySubtitle {
+    position: fixed;
+    left: 5%;
+    right: 5%;
+    bottom: 8%;
+    z-index: 2;
+    text-align: center;
+    white-space: pre-line;
+    font-size: 2.5vw;
+    line-height: 1.35;
+    font-weight: 500;
+    color: #fff;
+    text-shadow: 0 0 4px #000, 0 0 8px #000, 1px 1px 2px #000;
+    pointer-events: none;
+}
+
+#videoOsdPage {
+    z-index: 3 !important;
+}

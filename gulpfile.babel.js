@@ -71,6 +71,12 @@ function modifyIndex() {
             meta.setAttribute('content', 'default-src * \'self\' \'unsafe-inline\' \'unsafe-eval\' data: gap: file: filesystem: ws: wss:;');
             this.head.appendChild(meta);
 
+            // inject tizen.css
+            const tizenCss = this.createElement('link');
+            tizenCss.setAttribute('rel', 'stylesheet');
+            tizenCss.setAttribute('href', '../tizen.css');
+            this.head.appendChild(tizenCss);
+
             // Search for injected main.bundle
             let apploader = this.querySelector('script[src^=main]');
 
@@ -112,6 +118,12 @@ function modifyIndex() {
             tizen.setAttribute('src', '../tizen.js');
             tizen.setAttribute('defer', '');
             injectTarget.insertBefore(tizen, apploader);
+
+            // inject avplayVideoPlayer.js
+            const avplay = this.createElement('script');
+            avplay.setAttribute('src', '../avplayVideoPlayer.js');
+            avplay.setAttribute('defer', '');
+            injectTarget.insertBefore(avplay, apploader);
 
             return this;
         }))
