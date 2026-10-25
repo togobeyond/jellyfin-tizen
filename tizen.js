@@ -43,7 +43,7 @@
             return tizen.application.getCurrentApplication().appInfo.version;
         } catch (err) {
             console.warn('Unable to read app version', err);
-            return '0.3.7';
+            return '0.3.8';
         }
     }
 

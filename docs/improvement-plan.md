@@ -26,7 +26,7 @@
 ### 구현 현황 (2026-10-25)
 
 이 리포트 작성과 함께 아래 항목을 1차 구현했다. 빌드와 패키징은 로컬에서 검증했고,
-실제 TV(Samsung 2018 QLED)에 0.3.7로 설치까지 완료했고, 재생 검증을 진행 중이다.
+실제 TV(Samsung 2018 QLED)에 0.3.8로 설치까지 완료했고, 재생 검증을 진행 중이다.
 
 - [x] `NativeShell.getPlugins()` + `window.AvplayVideoPlayer` 전역 플러그인 구조
 - [x] AVPlay 재생/일시정지/탐색/정지/종료, 버퍼링·완료·에러 이벤트 연결
@@ -86,9 +86,11 @@
   - 4K HEVC HDR10 MKV: Direct Play, `TranscodingInfo = null`
   - 외부 한국어 자막: VTT 파싱 후 DOM 오버레이로 표시
 - HLS remux는 서버가 Direct Play를 지원하지 않는 파일에 대한 fallback으로 사용
-- 0.3.7: Tizen 4/5에서 **H.264 MKV는 HLS TS로 remux**하고, **HEVC MKV(4K HDR 포함)는 Direct Play** 유지
-  - H.264 MKV progressive 재생에서 간헐적 멈춤이 보고됨
-  - HLS remux는 `IsVideoDirect=true`, `IsAudioDirect=true` (컨테이너만 변경)
+- 0.3.8: Tizen 4/5에서는 **모든 MKV를 HLS TS로 remux**
+  - H.264/HEVC 모두 progressive MKV 재생에서 간헐적 멈춤이 보고됨
+  - HLS remux는 `IsVideoDirect=true` (비디오 copy, HDR 유지), 오디오도 가능한 한 copy
+  - 4K HDR10 HEVC도 video copy로 재생되며 HDR 메타데이터가 유지됨
+  - MP4/TS 등 다른 컨테이너는 계속 Direct Play
 
 ---
 

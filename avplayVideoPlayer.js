@@ -230,10 +230,7 @@
                 {
                     Container: 'mkv',
                     Type: 'Video',
-                    // Tizen 4/5 MKV demuxing is unreliable for H.264. Keep
-                    // HEVC direct play (including 4K HDR) and remux H.264 MKV
-                    // to HLS TS instead.
-                    VideoCodec: isOldTizen ? 'hevc' : videoCodecs,
+                    VideoCodec: videoCodecs,
                     AudioCodec: audioCodecs
                 },
                 {
@@ -282,7 +279,12 @@
                     Container: 'opus,mp3,aac,m4a,m4b,flac,webma,wma,wav,ogg',
                     Type: 'Audio'
                 }
-            ],
+            ].filter(function (profile) {
+                // MKV progressive playback is unreliable on Tizen 4/5 for
+                // both H.264 and HEVC. Remux to HLS TS instead: the server
+                // copies video and audio, so quality/HDR are preserved.
+                return !(isOldTizen && profile.Container === 'mkv');
+            }),
 
             TranscodingProfiles: [
                 {
