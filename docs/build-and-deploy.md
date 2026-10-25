@@ -110,7 +110,19 @@ python3 tools/install.py <TV_IP> --uninstall  # 삭제
 | `JAXBException` / `InaccessibleObjectException` | 구 JAXB + JDK 17 모듈 제한 | `JAVA_TOOL_OPTIONS=--add-opens=java.base/java.lang=ALL-UNNAMED` |
 | `sdb` 없음 / Rosetta 이슈 | Tizen Studio sdb가 Intel 바이너리 | Python SDB 설치 스크립트 사용 |
 
-## 8. 릴리스 체크리스트
+## 8. 자막 폰트
+
+자막은 `tizen.css`의 `.avplaySubtitle`에 지정된 폰트로 DOM 렌더링된다.
+기본 폰트는 `a시네마M`이며, 아래 위치에 두면 WGT에 포함된다.
+
+```sh
+cp "/path/to/a시네마M.ttf" fonts/ACinemaM.ttf
+```
+
+> 폰트 파일은 저작권 문제로 Git에 커밋하지 않는다(`.gitignore`).
+> 파일이 없으면 `sans-serif`로 대체된다.
+
+## 9. 릴리스 체크리스트
 
 - [ ] `config.xml` / `package.json` 버전 증가 (TV 업데이트 인식)
 - [ ] `USE_SYSTEM_FONTS=1`로 웹 빌드

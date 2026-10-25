@@ -18,6 +18,16 @@ body.hide-scroll .avplayVideoPlayer {
     overflow: hidden;
 }
 
+/* Custom subtitle font. Place the font file locally; it is intentionally not
+ * committed to the repository because of its license. */
+@font-face {
+    font-family: 'ACinemaM';
+    src: url('fonts/ACinemaM.ttf') format('truetype');
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+}
+
 /* Subtitles are rendered by the AVPlay plugin in the DOM, so they work with
  * both progressive and HLS playback. */
 .avplaySubtitle {
@@ -28,9 +38,10 @@ body.hide-scroll .avplayVideoPlayer {
     z-index: 2;
     text-align: center;
     white-space: pre-line;
+    font-family: 'ACinemaM', sans-serif;
     font-size: 2.5vw;
     line-height: 1.35;
-    font-weight: 500;
+    font-weight: 400;
     color: #fff;
     text-shadow: 0 0 4px #000, 0 0 8px #000, 1px 1px 2px #000;
     pointer-events: none;
