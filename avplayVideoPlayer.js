@@ -230,7 +230,10 @@
                 {
                     Container: 'mkv',
                     Type: 'Video',
-                    VideoCodec: videoCodecs,
+                    // Tizen 4/5 MKV demuxing is unreliable for H.264. Keep
+                    // HEVC direct play (including 4K HDR) and remux H.264 MKV
+                    // to HLS TS instead.
+                    VideoCodec: isOldTizen ? 'hevc' : videoCodecs,
                     AudioCodec: audioCodecs
                 },
                 {
