@@ -43,7 +43,7 @@
             return tizen.application.getCurrentApplication().appInfo.version;
         } catch (err) {
             console.warn('Unable to read app version', err);
-            return '0.3.8';
+            return '0.3.9';
         }
     }
 
@@ -283,6 +283,48 @@
             releaseScreen();
         }
     };
+
+    // Jellyfin's guide vertical scroller has a broken size calculation on
+    // Tizen: its scroll range stays 0, so moving down changes focus without
+    // moving the guide. Center the focused program row manually instead.
+    function centerGuideProgram(target) {
+        var scroller = document.querySelector('.guideVerticalScroller');
+
+        if (!scroller || !target || !target.classList || !target.classList.contains('programCell')) {
+            return;
+        }
+
+        var slider = scroller.querySelector('.scrollSlider');
+
+        if (!slider) {
+            return;
+        }
+
+        var frameHeight = scroller.clientHeight;
+        var sliderHeight = slider.scrollHeight || slider.offsetHeight;
+        var sliderRect = slider.getBoundingClientRect();
+        var cellRect = target.getBoundingClientRect();
+        var top = cellRect.top - sliderRect.top;
+        var desired = top - ((frameHeight - cellRect.height) / 2);
+
+        desired = Math.max(0, Math.min(desired, sliderHeight - frameHeight));
+
+        slider.style.transition = 'transform 180ms ease-out';
+        slider.style.transform = 'translateY(-' + Math.round(desired) + 'px)';
+    }
+
+    document.addEventListener('focusin', function (event) {
+        var target = event.target;
+
+        if (!target || !target.classList || !target.classList.contains('programCell')) {
+            return;
+        }
+
+        // Run after Jellyfin's own focus handler.
+        setTimeout(function () {
+            centerGuideProgram(target);
+        }, 0);
+    }, true);
 
     function registerKey(key) {
         try {

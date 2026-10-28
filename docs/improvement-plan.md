@@ -26,7 +26,7 @@
 ### 구현 현황 (2026-10-25)
 
 이 리포트 작성과 함께 아래 항목을 1차 구현했다. 빌드와 패키징은 로컬에서 검증했고,
-실제 TV(Samsung 2018 QLED)에 0.3.8로 설치까지 완료했고, 재생 검증을 진행 중이다.
+실제 TV(Samsung 2018 QLED)에 0.3.9로 설치까지 완료했고, 재생 검증을 진행 중이다.
 
 - [x] `NativeShell.getPlugins()` + `window.AvplayVideoPlayer` 전역 플러그인 구조
 - [x] AVPlay 재생/일시정지/탐색/정지/종료, 버퍼링·완료·에러 이벤트 연결
@@ -91,6 +91,14 @@
   - HLS remux는 `IsVideoDirect=true` (비디오 copy, HDR 유지), 오디오도 가능한 한 copy
   - 4K HDR10 HEVC도 video copy로 재생되며 HDR 메타데이터가 유지됨
   - MP4/TS 등 다른 컨테이너는 계속 Direct Play
+
+### 실시간 TV 가이드 스크롤 (0.3.9)
+
+- 증상: 가이드에서 아래로 이동해도 화면이 따라 스크롤되지 않음
+- 원인: Jellyfin 12.3의 guide scroller가 Tizen에서 frame/slidee 높이를 잘못 계산해
+  스크롤 범위(`_pos.end`)가 0으로 고정됨
+- 수정: 포커스가 program cell로 이동할 때 `tizen.js`에서 guide scroller의
+  `.scrollSlider` transform을 직접 계산해 선택 행을 화면 중앙에 맞춤
 
 ---
 

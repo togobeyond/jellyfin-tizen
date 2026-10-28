@@ -76,7 +76,7 @@ tizen package -t wgt -s <profile> -o . -- .buildResult
 
 - author 인증서: `~/.jellyfin-tizen/certs/jellyfin-author.p12`
 - author 비밀번호: macOS Keychain `jellyfin-tizen-author`
-- distributor: `~/share/.tizen-cert/distributor/tizen-distributor-signer.p12`
+- distributor: `~/tizen-studio/tools/certificate-generator/certificates/distributor/sdk-public/tizen-distributor-signer.p12`
 
 ```sh
 tizen package -t wgt -s jellyfin-tv -o . -- .buildResult
