@@ -653,7 +653,11 @@
         self.play = function (options) {
             console.log('[AVPlay] play start', options.playMethod);
 
-            var proxySlot = proxySlotFromItem(options.item) || self._pendingProxySlot;
+            var currentItem = options.item
+                || (self.playbackManager && self.playbackManager.currentItem
+                    ? self.playbackManager.currentItem()
+                    : null);
+            var proxySlot = proxySlotFromItem(currentItem) || self._pendingProxySlot;
 
             if (!proxySlot) {
                 var pathMatch = /\/live\/slot\/(\d+)/.exec(

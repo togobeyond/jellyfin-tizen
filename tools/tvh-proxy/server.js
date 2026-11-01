@@ -31,6 +31,14 @@ const IDLE_GRACE_MS = parseInt(process.env.IDLE_GRACE_MS || '30000', 10);
 const SLOT_COUNT = parseInt(process.env.SLOT_COUNT || '4', 10);
 // "1" -> channels 1.1, 1.2, ... (sorted before the 2.1 channel).
 const SLOT_CHANNEL_BASE = process.env.SLOT_CHANNEL_BASE || '1';
+// Jellyfin's M3U tuner copies the proxy stream as fast as the disk allows
+// (often 30-40 MB/s), which starves the TV's direct stream on a busy HDD.
+// Throttle that consumer to a little above realtime.
+const THROTTLE_ADDRESSES = new Set((process.env.THROTTLE_ADDRESSES || '192.168.1.4')
+    .split(',')
+    .map((address) => address.trim())
+    .filter(Boolean));
+const THROTTLE_BYTES_PER_SEC = parseInt(process.env.THROTTLE_BYTES_PER_SEC || '4000000', 10);
 const SCAN_MS = 2000;
 const VIDEO_EXTENSIONS = new Set(['.ts', '.m2ts', '.mts', '.trp']);
 
@@ -403,7 +411,9 @@ async function buildIndex(fullPath, index) {
 }
 
 function offsetForMs(index, targetMs) {
-    if (!index.entries.length) {
+    // The recording start is best played from byte 0 so AVPlay gets the
+    // PAT/PMT and the first keyframe. The first PCR is usually a bit later.
+    if (!index.entries.length || targetMs <= 0) {
         return 0;
     }
 
@@ -704,7 +714,8 @@ async function streamRecording(req, res, name, startOffset) {
     }
 
     let aborted = false;
-    const remote = req.socket.remoteAddress;
+    const remote = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+    const throttleBps = THROTTLE_ADDRESSES.has(remote) ? THROTTLE_BYTES_PER_SEC : 0;
     const started = Date.now();
     let sent = 0;
     let reason = 'ended';
@@ -744,6 +755,16 @@ async function streamRecording(req, res, name, startOffset) {
                     position += bytesRead;
                     sent += bytesRead;
                     await writeWithBackpressure(res, buffer.subarray(0, bytesRead));
+
+                    if (throttleBps > 0) {
+                        const targetMs = (sent / throttleBps) * 1000;
+                        const elapsedMs = Date.now() - started;
+
+                        if (targetMs > elapsedMs) {
+                            await sleep(Math.min(1000, targetMs - elapsedMs));
+                        }
+                    }
+
                     continue;
                 }
             }
