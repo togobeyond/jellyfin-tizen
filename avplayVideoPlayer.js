@@ -883,6 +883,21 @@
                     self.startHlsDuration(options.url);
 
                     webapis.avplay.setTimeoutForBuffering(60);
+
+                    if (options.mediaSource && options.mediaSource.IsInfiniteStream) {
+                        try {
+                            // Live TV: the default initial buffer is around 10
+                            // seconds. The documented minimum is 4 seconds,
+                            // which starts channels noticeably faster on LAN.
+                            webapis.avplay.setBufferingParam(
+                                'PLAYER_BUFFER_FOR_PLAY', 'PLAYER_BUFFER_SIZE_IN_SECOND', 4);
+                            webapis.avplay.setBufferingParam(
+                                'PLAYER_BUFFER_FOR_RESUME', 'PLAYER_BUFFER_SIZE_IN_SECOND', 4);
+                        } catch (err) {
+                            console.warn('[AVPlay] setBufferingParam failed', err);
+                        }
+                    }
+
                     webapis.avplay.setListener(listener);
 
                     if (webapis.avplay.setDisplayMethod) {
