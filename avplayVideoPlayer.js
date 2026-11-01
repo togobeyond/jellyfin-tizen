@@ -522,6 +522,50 @@
         }
     }
 
+    // AVPlay reports 0 for a growing HLS event playlist, so the OSD would
+    // show no duration and the seek bar could not be used. Sum the segment
+    // durations from the playlist instead.
+    function fetchPlaylistDurationMs(url) {
+        return fetch(url, { credentials: 'same-origin' }).then(function (response) {
+            if (!response.ok) {
+                throw new Error('playlist returned ' + response.status);
+            }
+
+            return response.text();
+        }).then(function (text) {
+            if (text.indexOf('#EXT-X-STREAM-INF') !== -1) {
+                var lines = text.split(/\r?\n/);
+
+                for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i].trim();
+
+                    if (!line || line.charAt(0) === '#') {
+                        continue;
+                    }
+
+                    var variantUrl = new URL(line, url).href;
+                    var query = url.indexOf('?') !== -1 ? url.substring(url.indexOf('?') + 1) : '';
+
+                    if (query && variantUrl.indexOf('api_key=') === -1) {
+                        variantUrl += (variantUrl.indexOf('?') === -1 ? '?' : '&') + query;
+                    }
+
+                    return fetchPlaylistDurationMs(variantUrl);
+                }
+            }
+
+            var totalSeconds = 0;
+            var pattern = /#EXTINF:\s*([0-9.]+)/g;
+            var match;
+
+            while ((match = pattern.exec(text))) {
+                totalSeconds += parseFloat(match[1]) || 0;
+            }
+
+            return totalSeconds * 1000;
+        });
+    }
+
     function AvplayVideoPlayer(modules) {
         var self = this;
 
@@ -554,6 +598,8 @@
         self._subtitleStreamIndex = null;
         self._lastCurrentTime = 0;
         self._lastDuration = 0;
+        self._hlsDurationMs = 0;
+        self._hlsDurationTimer = null;
         self._subtitleCues = [];
 
         self.canPlayMediaType = function (mediaType) {
@@ -717,6 +763,7 @@
                     clearTimeout(prepareTimer);
 
                     if (error) {
+                        self.stopHlsDuration();
                         reject(error);
                     } else {
                         resolve();
@@ -783,6 +830,7 @@
                     safeClose();
 
                     webapis.avplay.open(options.url);
+                    self.startHlsDuration(options.url);
 
                     webapis.avplay.setTimeoutForBuffering(60);
                     webapis.avplay.setListener(listener);
@@ -849,6 +897,7 @@
             self.clearSubtitle();
             self._lastCurrentTime = self.currentTime();
             self._lastDuration = self.duration();
+            self.stopHlsDuration();
 
             if (hasAvPlay()) {
                 try {
@@ -880,6 +929,7 @@
         self.destroy = function () {
             self.removeDisplayListeners();
             self.clearSubtitle();
+            self.stopHlsDuration();
 
             var subtitleElement = document.querySelector('.avplaySubtitle');
 
@@ -963,14 +1013,48 @@
 
         self.duration = function () {
             if (!hasAvPlay() || webapis.avplay.getState() === STATE_IDLE) {
-                return self._lastDuration;
+                return self._hlsDurationMs || self._lastDuration;
             }
 
+            var duration = 0;
+
             try {
-                return webapis.avplay.getDuration();
+                duration = webapis.avplay.getDuration() || 0;
             } catch (err) {
-                return self._lastDuration;
+                duration = 0;
             }
+
+            return Math.max(duration, self._hlsDurationMs) || self._lastDuration;
+        };
+
+        self.startHlsDuration = function (url) {
+            self.stopHlsDuration();
+
+            if (!url || url.toLowerCase().indexOf('.m3u8') === -1) {
+                return;
+            }
+
+            var update = function () {
+                fetchPlaylistDurationMs(url).then(function (milliseconds) {
+                    if (milliseconds > self._hlsDurationMs) {
+                        self._hlsDurationMs = milliseconds;
+                    }
+                }).catch(function (err) {
+                    console.debug('[AVPlay] unable to read HLS duration', err);
+                });
+            };
+
+            update();
+            self._hlsDurationTimer = setInterval(update, 3000);
+        };
+
+        self.stopHlsDuration = function () {
+            if (self._hlsDurationTimer) {
+                clearInterval(self._hlsDurationTimer);
+                self._hlsDurationTimer = null;
+            }
+
+            self._hlsDurationMs = 0;
         };
 
         self.seekable = function () {
@@ -1029,6 +1113,10 @@
 
         self.getBufferedRanges = function () {
             // Buffered ranges are reported in Jellyfin ticks (100 ns).
+            if (self._hlsDurationMs > 0) {
+                return [{ start: 0, end: self._hlsDurationMs * 10000 }];
+            }
+
             var currentTime = self.currentTime();
             return currentTime ? [{ start: 0, end: currentTime * 10000 }] : [];
         };
