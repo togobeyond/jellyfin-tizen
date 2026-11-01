@@ -75,6 +75,12 @@
         return getTizenVersion() >= 6.5;
     }
 
+    function isRecordingProxyChannel(item) {
+        // tools/tvh-proxy names its slot channels "TVH 녹화 N · <program>".
+        return !!(item && item.Type === 'TvChannel'
+            && /^TVH\s*(녹화|Recording)/i.test(item.Name || ''));
+    }
+
     function getVideoCodecs() {
         var codecs = 'h264,hevc,mpeg2video,vc1,msmpeg4v2,vp8,vp9';
 
@@ -125,9 +131,13 @@
         return conditions;
     }
 
-    function buildDeviceProfile() {
+    function buildDeviceProfile(item) {
         var videoCodecs = getVideoCodecs();
         var audioCodecs = getAudioCodecs();
+        // The recording proxy exposes a growing file. Play it through the
+        // server's HLS output so the seek bar and duration work; the normal
+        // live channels keep Direct Play.
+        var isProxyChannel = isRecordingProxyChannel(item);
         var videoConditions = [
             {
                 Condition: 'NotEquals',
@@ -280,6 +290,11 @@
                     Type: 'Audio'
                 }
             ].filter(function (profile) {
+                // Recording proxy channels: use HLS so seeking works.
+                if (isProxyChannel && profile.Container === 'ts,m2ts,mts,trp') {
+                    return false;
+                }
+
                 // MKV progressive playback is unreliable on Tizen 4/5 for
                 // both H.264 and HEVC. Remux to HLS TS instead: the server
                 // copies video and audio, so quality/HDR are preserved.
@@ -545,12 +560,18 @@
             return hasAvPlay() && (mediaType || '').toLowerCase() === 'video';
         };
 
-        self.supportsPlayMethod = function () {
+        self.supportsPlayMethod = function (playMethod, item) {
+            // Recording proxy: only HLS, so AVPlay can seek and report a
+            // growing duration like the web player.
+            if (isRecordingProxyChannel(item) && playMethod !== 'Transcode') {
+                return false;
+            }
+
             return true;
         };
 
-        self.getDeviceProfile = function () {
-            return Promise.resolve(buildDeviceProfile());
+        self.getDeviceProfile = function (item) {
+            return Promise.resolve(buildDeviceProfile(item));
         };
 
         self.currentSrc = function () {

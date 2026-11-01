@@ -108,6 +108,9 @@
   - 녹화 시작/종료 시 Jellyfin 가이드 자동 갱신 (API 키 설정 시)
   - `/live/slot/N`: 현재 녹화 중인 파일을 계속 커지는 스트림으로 중계
   - 설정: [tools/tvh-proxy/README.md](../tools/tvh-proxy/README.md)
+- 0.3.12: 프록시 채널만 HLS로 재생 → OSD 탐색(FF/RW)과 늘어나는 재생시간 사용
+  - 일반 라이브 채널은 기존처럼 DirectPlay 유지
+  - 웹 플레이어와 동일하게 원하는 위치로 이동 가능
 - 0.3.10에서 라이브 채널을 HLS로 강제했으나, TS 라이브 DirectPlay가
   문제없이 동작한다는 실사용 확인에 따라 **0.3.11에서 DirectPlay로 되돌림**
   - HLS 경로는 서버 트랜스코딩(QSV)을 쓰므로 DirectPlay가 가능하면 그쪽이 낫다
