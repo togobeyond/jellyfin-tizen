@@ -81,6 +81,27 @@
             && /^TVH\s*(녹화|Recording)/i.test(item.Name || ''));
     }
 
+    function proxySlotFromItem(item) {
+        if (!isRecordingProxyChannel(item)) {
+            return 0;
+        }
+
+        var match = /^TVH\s*(?:녹화|Recording)\s*(\d+)/i.exec(item.Name || '');
+        return match ? parseInt(match[1], 10) : 0;
+    }
+
+    function proxyBaseFromOptions(options) {
+        var mediaPath = (options.mediaSource && options.mediaSource.Path) || '';
+        var match = /^(https?:\/\/[^/]+)\/live\/slot\/\d+/.exec(mediaPath);
+
+        if (match) {
+            return match[1];
+        }
+
+        var urlMatch = /^https?:\/\/([^/:]+)/.exec(options.url || '');
+        return urlMatch ? 'http://' + urlMatch[1] + ':8099' : null;
+    }
+
     function getVideoCodecs() {
         var codecs = 'h264,hevc,mpeg2video,vc1,msmpeg4v2,vp8,vp9';
 
@@ -134,10 +155,6 @@
     function buildDeviceProfile(item) {
         var videoCodecs = getVideoCodecs();
         var audioCodecs = getAudioCodecs();
-        // The recording proxy exposes a growing file. Play it through the
-        // server's HLS output so the seek bar and duration work; the normal
-        // live channels keep Direct Play.
-        var isProxyChannel = isRecordingProxyChannel(item);
         var videoConditions = [
             {
                 Condition: 'NotEquals',
@@ -290,11 +307,6 @@
                     Type: 'Audio'
                 }
             ].filter(function (profile) {
-                // Recording proxy channels: use HLS so seeking works.
-                if (isProxyChannel && profile.Container === 'ts,m2ts,mts,trp') {
-                    return false;
-                }
-
                 // MKV progressive playback is unreliable on Tizen 4/5 for
                 // both H.264 and HEVC. Remux to HLS TS instead: the server
                 // copies video and audio, so quality/HDR are preserved.
@@ -525,8 +537,21 @@
     // AVPlay reports 0 for a growing HLS event playlist, so the OSD would
     // show no duration and the seek bar could not be used. Sum the segment
     // durations from the playlist instead.
+    function playlistToken(url) {
+        var match = /[?&](?:ApiKey|api_key|apikey)=([^&]+)/i.exec(url);
+        return match ? decodeURIComponent(match[1]) : null;
+    }
+
     function fetchPlaylistDurationMs(url) {
-        return fetch(url, { credentials: 'same-origin' }).then(function (response) {
+        var headers = {};
+        var token = playlistToken(url);
+
+        if (token) {
+            // The URL token alone is rejected for the m3u8 endpoint on Tizen.
+            headers.Authorization = 'MediaBrowser Token=' + token;
+        }
+
+        return fetch(url, { credentials: 'same-origin', headers: headers }).then(function (response) {
             if (!response.ok) {
                 throw new Error('playlist returned ' + response.status);
             }
@@ -546,7 +571,7 @@
                     var variantUrl = new URL(line, url).href;
                     var query = url.indexOf('?') !== -1 ? url.substring(url.indexOf('?') + 1) : '';
 
-                    if (query && variantUrl.indexOf('api_key=') === -1) {
+                    if (query && !/[?&](?:ApiKey|api_key|apikey)=/i.test(variantUrl)) {
                         variantUrl += (variantUrl.indexOf('?') === -1 ? '?' : '&') + query;
                     }
 
@@ -600,23 +625,24 @@
         self._lastDuration = 0;
         self._hlsDurationMs = 0;
         self._hlsDurationTimer = null;
+        self._pendingProxySlot = 0;
+        self._proxy = null;
+        self._proxyReopenMs = null;
+        self._proxySeeking = false;
+        self._proxyQueuedSeek = null;
+        self._reopening = false;
         self._subtitleCues = [];
 
         self.canPlayMediaType = function (mediaType) {
             return hasAvPlay() && (mediaType || '').toLowerCase() === 'video';
         };
 
-        self.supportsPlayMethod = function (playMethod, item) {
-            // Recording proxy: only HLS, so AVPlay can seek and report a
-            // growing duration like the web player.
-            if (isRecordingProxyChannel(item) && playMethod !== 'Transcode') {
-                return false;
-            }
-
+        self.supportsPlayMethod = function () {
             return true;
         };
 
         self.getDeviceProfile = function (item) {
+            self._pendingProxySlot = proxySlotFromItem(item);
             return Promise.resolve(buildDeviceProfile(item));
         };
 
@@ -626,6 +652,24 @@
 
         self.play = function (options) {
             console.log('[AVPlay] play start', options.playMethod);
+
+            var proxySlot = proxySlotFromItem(options.item) || self._pendingProxySlot;
+
+            if (!proxySlot) {
+                var pathMatch = /\/live\/slot\/(\d+)/.exec(
+                    (options.mediaSource && options.mediaSource.Path) || '');
+                proxySlot = pathMatch ? parseInt(pathMatch[1], 10) : 0;
+            }
+
+            var proxyBase = proxySlot ? proxyBaseFromOptions(options) : null;
+
+            if (proxySlot && proxyBase) {
+                options = self.prepareProxyOptions(options, proxySlot, proxyBase);
+            } else if (self._proxy) {
+                self.stopProxyInfo();
+                self._proxy = null;
+            }
+
             self._ended = false;
             self._lastCurrentTime = 0;
             self._lastDuration = 0;
@@ -660,7 +704,7 @@
                         throw err;
                     }
 
-                    if (options.playerStartPositionTicks) {
+                    if (options.playerStartPositionTicks && !self._proxy) {
                         // Jellyfin ticks (100 ns) -> milliseconds.
                         return self.currentTime(options.playerStartPositionTicks / 10000)
                             .catch(function (err) {
@@ -748,11 +792,13 @@
                     if (!settled) {
                         settled = true;
                         console.error('[AVPlay] prepare timed out');
+                        safeStop();
+                        safeClose();
                         reject({
                             type: 'PLAYER_ERROR'
                         });
                     }
-                }, 30000);
+                }, self._proxy ? 10000 : 30000);
 
                 function finish(error) {
                     if (settled) {
@@ -785,7 +831,7 @@
 
                     onstreamcompleted: function () {
                         console.log('[AVPlay] stream completed');
-                        if (self._ended) {
+                        if (self._ended || self._reopening) {
                             return;
                         }
 
@@ -845,12 +891,16 @@
                         finish();
                     }, function (err) {
                         console.error('[AVPlay] prepare failed', err);
+                        safeStop();
+                        safeClose();
                         finish({
                             type: 'MEDIA_NOT_SUPPORTED'
                         });
                     });
                 } catch (err) {
                     console.error('[AVPlay] open failed', err);
+                    safeStop();
+                    safeClose();
                     finish({
                         type: 'MEDIA_NOT_SUPPORTED'
                     });
@@ -898,6 +948,10 @@
             self._lastCurrentTime = self.currentTime();
             self._lastDuration = self.duration();
             self.stopHlsDuration();
+            self.stopProxyInfo();
+            self._proxy = null;
+            self._proxySeeking = false;
+            self._proxyQueuedSeek = null;
 
             if (hasAvPlay()) {
                 try {
@@ -930,6 +984,10 @@
             self.removeDisplayListeners();
             self.clearSubtitle();
             self.stopHlsDuration();
+            self.stopProxyInfo();
+            self._proxy = null;
+            self._proxySeeking = false;
+            self._proxyQueuedSeek = null;
 
             var subtitleElement = document.querySelector('.avplaySubtitle');
 
@@ -979,18 +1037,160 @@
             return self._subtitleStreamIndex;
         };
 
+        self.prepareProxyOptions = function (options, slot, base) {
+            var fromMs = self._proxyReopenMs;
+
+            if (fromMs == null) {
+                fromMs = options.playerStartPositionTicks
+                    ? options.playerStartPositionTicks / 10000
+                    : 0;
+            }
+
+            self._proxyReopenMs = null;
+
+            var duration = self._proxy && self._proxy.slot === slot
+                ? self._proxy.durationMs
+                : 0;
+
+            self._proxy = {
+                slot: slot,
+                base: base,
+                baseMs: fromMs,
+                durationMs: duration,
+                timer: null
+            };
+
+            var copy = Object.assign({}, options);
+            copy.url = base + '/live/slot/' + slot + '?from=' + (fromMs / 1000).toFixed(3);
+
+            self.startProxyInfo();
+            return copy;
+        };
+
+        self.startProxyInfo = function () {
+            self.stopProxyInfo();
+
+            if (!self._proxy) {
+                return;
+            }
+
+            var update = function () {
+                if (!self._proxy) {
+                    return;
+                }
+
+                var proxy = self._proxy;
+
+                fetch(proxy.base + '/info/slot/' + proxy.slot)
+                    .then(function (response) {
+                        return response.ok ? response.json() : null;
+                    })
+                    .then(function (info) {
+                        if (info && info.durationMs > 0 && self._proxy === proxy) {
+                            proxy.durationMs = info.durationMs;
+                        }
+                    })
+                    .catch(function () {});
+            };
+
+            update();
+            self._proxy.timer = setInterval(update, 5000);
+        };
+
+        self.stopProxyInfo = function () {
+            if (self._proxy && self._proxy.timer) {
+                clearInterval(self._proxy.timer);
+                self._proxy.timer = null;
+            }
+        };
+
+        self.seekProxy = function (milliseconds) {
+            var proxy = self._proxy;
+
+            if (!proxy) {
+                return Promise.resolve();
+            }
+
+            if (self._proxySeeking) {
+                self._proxyQueuedSeek = milliseconds;
+                return Promise.resolve();
+            }
+
+            var target = Math.max(0, milliseconds);
+            var isLive = proxy.durationMs > 0 && target >= proxy.durationMs - 1500;
+            var query = isLive ? 'live' : String(Math.round(target));
+
+            self._proxySeeking = true;
+            self._reopening = true;
+
+            return fetch(proxy.base + '/info/slot/' + proxy.slot + '?t=' + query)
+                .then(function (response) {
+                    return response.ok ? response.json() : null;
+                })
+                .then(function (info) {
+                    if (info && info.durationMs > 0) {
+                        proxy.durationMs = info.durationMs;
+                    }
+
+                    self._proxyReopenMs = info ? info.startMs : target;
+
+                    try {
+                        safeStop();
+                        safeClose();
+                    } catch (err) {
+                        console.warn('[AVPlay] proxy close failed', err);
+                    }
+
+                    return new Promise(function (resolve) {
+                        setTimeout(resolve, 250);
+                    }).then(function () {
+                        return self.play(self._currentPlayOptions);
+                    });
+                })
+                .then(function () {
+                    self._proxySeeking = false;
+                    self._reopening = false;
+
+                    if (self._proxyQueuedSeek != null) {
+                        var queued = self._proxyQueuedSeek;
+                        self._proxyQueuedSeek = null;
+                        return self.seekProxy(queued);
+                    }
+                })
+                .catch(function (err) {
+                    self._proxySeeking = false;
+                    self._reopening = false;
+                    console.warn('[AVPlay] proxy seek failed', err);
+
+                    try {
+                        safeStop();
+                        safeClose();
+                    } catch (closeError) {
+                        console.warn('[AVPlay] proxy close after failure failed', closeError);
+                    }
+                });
+        };
+
         // jellyfin-web 12 expects the player API in milliseconds.
         self.currentTime = function (milliseconds) {
             if (milliseconds == null) {
+                var current;
+
                 if (!hasAvPlay() || webapis.avplay.getState() === STATE_IDLE) {
-                    return self._lastCurrentTime;
+                    current = self._lastCurrentTime;
+                } else {
+                    try {
+                        current = webapis.avplay.getCurrentTime();
+                    } catch (err) {
+                        current = self._lastCurrentTime;
+                    }
                 }
 
-                try {
-                    return webapis.avplay.getCurrentTime();
-                } catch (err) {
-                    return self._lastCurrentTime;
-                }
+                return self._proxy ? self._proxy.baseMs + current : current;
+            }
+
+            if (self._proxy) {
+                return self.seekProxy(milliseconds);
             }
 
             return new Promise(function (resolve, reject) {
@@ -1012,6 +1212,10 @@
         };
 
         self.duration = function () {
+            if (self._proxy && self._proxy.durationMs > 0) {
+                return self._proxy.durationMs;
+            }
+
             if (!hasAvPlay() || webapis.avplay.getState() === STATE_IDLE) {
                 return self._hlsDurationMs || self._lastDuration;
             }
@@ -1058,6 +1262,10 @@
         };
 
         self.seekable = function () {
+            if (self._proxy) {
+                return true;
+            }
+
             return hasAvPlay() && self.duration() > 0;
         };
 
@@ -1113,6 +1321,12 @@
 
         self.getBufferedRanges = function () {
             // Buffered ranges are reported in Jellyfin ticks (100 ns).
+            if (self._proxy) {
+                return self._proxy.durationMs > 0
+                    ? [{ start: 0, end: self._proxy.durationMs * 10000 }]
+                    : [];
+            }
+
             if (self._hlsDurationMs > 0) {
                 return [{ start: 0, end: self._hlsDurationMs * 10000 }];
             }

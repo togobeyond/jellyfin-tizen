@@ -112,6 +112,19 @@ function scan() {
     for (const name of state.keys()) {
         if (!seen.has(name)) {
             state.delete(name);
+            indexes.delete(name);
+        }
+    }
+
+    for (const recording of state.values()) {
+        if (!recording.active) {
+            continue;
+        }
+
+        const index = indexFor(recording.name);
+
+        if (!index.scanning && index.scannedBytes < recording.size - INDEX_READ_BYTES) {
+            buildIndex(path.join(RECORDINGS_DIR, recording.name), index);
         }
     }
 
@@ -200,6 +213,320 @@ function slotChannelName(slot, recording) {
     }
 
     return 'TVH 녹화 ' + slot + ' · ' + recordingLabel(recording.title);
+}
+
+// --- MPEG-TS time index ---------------------------------------------------
+// TVHeadend writes MPEG-TS with PCR timestamps. Sampling the PCR lets us map
+// a playback time to a byte offset in the growing file, so a client can seek
+// to the recording start, the live edge, or any position in between.
+
+const SEEK_PREROLL_MS = 3000;
+const INDEX_SAMPLE_BYTES = 4 * 1024 * 1024;
+const INDEX_READ_BYTES = 128 * 1024;
+
+const indexes = new Map();
+
+function indexFor(name) {
+    let index = indexes.get(name);
+
+    if (!index) {
+        index = {
+            entries: [],
+            firstMs: null,
+            lastMs: null,
+            scannedBytes: 0,
+            size: 0,
+            scanning: false,
+            complete: false,
+            promise: null
+        };
+        indexes.set(name, index);
+    }
+
+    return index;
+}
+
+function findPacketStart(buffer) {
+    const limit = Math.min(188, buffer.length);
+
+    for (let i = 0; i < limit; i++) {
+        if (buffer[i] !== 0x47) {
+            continue;
+        }
+
+        if (buffer.length <= i + 188 || buffer[i + 188] === 0x47) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+function scanPcrs(buffer, handler) {
+    const start = findPacketStart(buffer);
+
+    if (start < 0) {
+        return;
+    }
+
+    for (let i = start; i + 12 <= buffer.length; i += 188) {
+        if (buffer[i] !== 0x47) {
+            continue;
+        }
+
+        const afc = (buffer[i + 3] >> 4) & 3;
+
+        if (!(afc & 2)) {
+            continue;
+        }
+
+        const length = buffer[i + 4];
+
+        if (length < 7 || !(buffer[i + 5] & 0x10)) {
+            continue;
+        }
+
+        const base = (buffer[i + 6] * 0x2000000)
+            + (buffer[i + 7] << 17)
+            + (buffer[i + 8] << 9)
+            + (buffer[i + 9] << 1)
+            + (buffer[i + 10] >> 7);
+
+        handler(base / 90, i);
+    }
+}
+
+function firstPcr(buffer) {
+    let found = null;
+    scanPcrs(buffer, (milliseconds, offset) => {
+        if (!found) {
+            found = { milliseconds, offset };
+        }
+    });
+    return found;
+}
+
+function lastPcr(buffer) {
+    let found = null;
+    scanPcrs(buffer, (milliseconds, offset) => {
+        found = { milliseconds, offset };
+    });
+    return found;
+}
+
+async function readWindow(handle, offset, length) {
+    const buffer = Buffer.alloc(length);
+    const result = await handle.read(buffer, 0, length, offset);
+    return buffer.subarray(0, result.bytesRead);
+}
+
+async function primeIndex(fullPath, index) {
+    const handle = await fs.promises.open(fullPath, 'r');
+
+    try {
+        const stat = await handle.stat();
+
+        if (index.firstMs == null) {
+            const head = await readWindow(handle, 0, Math.min(1024 * 1024, stat.size));
+            const pcr = firstPcr(head);
+
+            if (pcr) {
+                index.firstMs = pcr.milliseconds;
+                index.entries.push({ ms: 0, offset: pcr.offset });
+            }
+        }
+
+    } finally {
+        await handle.close();
+    }
+}
+
+async function buildIndex(fullPath, index) {
+    if (index.scanning) {
+        return index.promise;
+    }
+
+    index.scanning = true;
+    index.promise = (async () => {
+        const handle = await fs.promises.open(fullPath, 'r');
+
+        try {
+            const stat = await handle.stat();
+            index.size = stat.size;
+
+            if (index.firstMs == null) {
+                const head = await readWindow(handle, 0, Math.min(1024 * 1024, stat.size));
+                const pcr = firstPcr(head);
+
+                if (pcr) {
+                    index.firstMs = pcr.milliseconds;
+                    index.entries.push({ ms: 0, offset: pcr.offset });
+                }
+            }
+
+            let offset = index.scannedBytes;
+
+            while (offset < stat.size - INDEX_READ_BYTES) {
+                const buffer = await readWindow(handle, offset, INDEX_READ_BYTES);
+                const pcr = firstPcr(buffer);
+
+                if (pcr && index.firstMs != null) {
+                    const milliseconds = pcr.milliseconds - index.firstMs;
+                    const last = index.entries[index.entries.length - 1];
+
+                    if (milliseconds >= 0 && (!last
+                        || (milliseconds > last.ms + 250 && milliseconds - last.ms <= 60000))) {
+                        index.entries.push({ ms: milliseconds, offset: offset + pcr.offset });
+
+                        if (index.lastMs == null || milliseconds > index.lastMs) {
+                            index.lastMs = milliseconds;
+                        }
+                    }
+                }
+
+                offset += INDEX_SAMPLE_BYTES;
+                index.scannedBytes = offset;
+                await new Promise((resolve) => setImmediate(resolve));
+            }
+
+            index.complete = index.scannedBytes >= stat.size - INDEX_READ_BYTES;
+        } finally {
+            await handle.close();
+        }
+    })().catch((err) => {
+        console.error('index build failed for ' + fullPath + ':', err.message);
+    }).finally(() => {
+        index.scanning = false;
+    });
+
+    return index.promise;
+}
+
+function offsetForMs(index, targetMs) {
+    if (!index.entries.length) {
+        return 0;
+    }
+
+    let low = 0;
+    let high = index.entries.length - 1;
+    let best = 0;
+
+    while (low <= high) {
+        const middle = (low + high) >> 1;
+
+        if (index.entries[middle].ms <= targetMs) {
+            best = middle;
+            low = middle + 1;
+        } else {
+            high = middle - 1;
+        }
+    }
+
+    return index.entries[best].offset;
+}
+
+function timeForMs(index, targetMs) {
+    if (!index.entries.length) {
+        return 0;
+    }
+
+    const offset = offsetForMs(index, targetMs);
+    const entry = index.entries.find((candidate) => candidate.offset === offset);
+    return entry ? entry.ms : 0;
+}
+
+async function seekInfo(name, targetParam) {
+    const recording = state.get(name);
+
+    if (!recording) {
+        return null;
+    }
+
+    const fullPath = path.join(RECORDINGS_DIR, name);
+    const index = indexFor(name);
+
+    await primeIndex(fullPath, index);
+
+    const durationMs = Math.max(0, index.lastMs || 0);
+
+    if (targetParam === undefined) {
+        buildIndex(fullPath, index);
+        return {
+            name,
+            durationMs,
+            startMs: 0,
+            offset: 0,
+            active: recording.active,
+            entries: index.entries.length
+        };
+    }
+
+    let targetMs;
+
+    if (targetParam === 'live' || targetParam == null) {
+        // Start a little before the live edge so AVPlay has a keyframe and
+        // enough buffered data to prepare.
+        targetMs = Math.max(0, durationMs - 5000);
+    } else {
+        targetMs = Math.max(0, parseFloat(targetParam) || 0);
+
+        if (targetMs > durationMs - 1500) {
+            targetMs = Math.max(0, durationMs - SEEK_PREROLL_MS);
+        }
+    }
+
+    const build = buildIndex(fullPath, index);
+
+    if (!index.complete) {
+        await Promise.race([build, new Promise((resolve) => setTimeout(resolve, 10000))]);
+    }
+
+    const startMs = timeForMs(index, targetMs);
+
+    return {
+        name,
+        durationMs,
+        startMs,
+        offset: offsetForMs(index, startMs),
+        active: recording.active,
+        entries: index.entries.length
+    };
+}
+
+async function offsetForStream(name, params) {
+    const recording = state.get(name);
+
+    if (!recording || (!params.has('from') && !params.has('start'))) {
+        return 0;
+    }
+
+    const fullPath = path.join(RECORDINGS_DIR, name);
+    const index = indexFor(name);
+    let targetMs = 0;
+
+    if (params.has('from')) {
+        targetMs = Math.max(0, (parseFloat(params.get('from')) || 0) * 1000);
+    } else {
+        const start = params.get('start');
+
+        if (start === 'live') {
+            await primeIndex(fullPath, index);
+            targetMs = Math.max(0, (index.lastMs || 0) - 5000);
+        } else {
+            targetMs = Math.max(0, ((parseFloat(start) || 0) * 1000) - SEEK_PREROLL_MS);
+        }
+    }
+
+    await primeIndex(fullPath, index);
+
+    if (index.entries.length < 2 && targetMs > 5000) {
+        await Promise.race([
+            buildIndex(fullPath, index),
+            new Promise((resolve) => setTimeout(resolve, 10000))
+        ]);
+    }
+
+    return offsetForMs(index, targetMs);
 }
 
 function playlistSignature() {
@@ -340,13 +667,27 @@ function writeWithBackpressure(res, buffer) {
     return new Promise((resolve) => {
         if (res.write(buffer)) {
             resolve();
-        } else {
-            res.once('drain', resolve);
+            return;
         }
+
+        let done = false;
+        const finish = () => {
+            if (done) {
+                return;
+            }
+
+            done = true;
+            res.removeListener('drain', finish);
+            res.removeListener('close', finish);
+            resolve();
+        };
+
+        res.once('drain', finish);
+        res.once('close', finish);
     });
 }
 
-async function streamRecording(req, res, name) {
+async function streamRecording(req, res, name, startOffset) {
     if (!name || path.basename(name) !== name || !isVideoFile(name)) {
         res.writeHead(400).end('Bad recording name');
         return;
@@ -376,10 +717,11 @@ async function streamRecording(req, res, name) {
         'Transfer-Encoding': 'chunked'
     });
 
-    console.log('stream start ' + name + ' from ' + remote);
+    console.log('stream start ' + name + ' from ' + remote
+        + (startOffset ? ' offset=' + startOffset : ''));
 
     const buffer = Buffer.alloc(64 * 1024);
-    let position = 0;
+    let position = Math.max(0, startOffset || 0);
     let lastSize = 0;
     let lastGrowth = Date.now();
     const known = state.get(name);
@@ -437,12 +779,39 @@ async function streamRecording(req, res, name) {
     }
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
 
     if (req.method === 'HEAD') {
         res.writeHead(200, { 'Content-Type': 'video/mp2t' });
         res.end();
+        return;
+    }
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+        });
+        res.end();
+        return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/debug') {
+        let body = '';
+
+        req.on('data', (chunk) => {
+            body += chunk;
+            if (body.length > 16384) {
+                req.destroy();
+            }
+        });
+        req.on('end', () => {
+            console.log('client-debug ' + body.replace(/\s+/g, ' ').slice(0, 4000));
+            res.writeHead(204, { 'Access-Control-Allow-Origin': '*' });
+            res.end();
+        });
         return;
     }
 
@@ -471,6 +840,57 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    if (url.pathname.startsWith('/info/')) {
+        const target = url.pathname.substring('/info/'.length);
+        let name = null;
+
+        if (target.startsWith('slot/')) {
+            const slot = parseInt(target.substring('slot/'.length), 10);
+            const entry = slotRecordings().find((candidate) => candidate.slot === slot);
+            name = entry && entry.recording ? entry.recording.name : null;
+        } else {
+            name = decodeURIComponent(target);
+        }
+
+        if (!name) {
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+                .end('No active recording');
+            return;
+        }
+
+        let info = null;
+
+        try {
+            info = await seekInfo(name, url.searchParams.has('t')
+                ? url.searchParams.get('t')
+                : undefined);
+        } catch (err) {
+            console.error('info failed:', err.message);
+        }
+
+        if (!info) {
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+                .end('Recording not found');
+            return;
+        }
+
+        if (url.searchParams.get('dump') === '1') {
+            const index = indexFor(name);
+            info.firstMs = index.firstMs;
+            info.lastMs = index.lastMs;
+            info.first = index.entries.slice(0, 5);
+            info.last = index.entries.slice(-5);
+        }
+
+        res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+            'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify(info));
+        return;
+    }
+
     if (url.pathname.startsWith('/live/slot/')) {
         const slot = parseInt(url.pathname.substring('/live/slot/'.length), 10);
         const entry = slotRecordings().find((candidate) => candidate.slot === slot);
@@ -481,13 +901,29 @@ const server = http.createServer((req, res) => {
             return;
         }
 
-        streamRecording(req, res, entry.recording.name);
+        let offset = 0;
+
+        try {
+            offset = await offsetForStream(entry.recording.name, url.searchParams);
+        } catch (err) {
+            console.error('seek failed:', err.message);
+        }
+
+        streamRecording(req, res, entry.recording.name, offset);
         return;
     }
 
     if (url.pathname.startsWith('/live/')) {
         const name = decodeURIComponent(url.pathname.substring('/live/'.length));
-        streamRecording(req, res, name);
+        let offset = 0;
+
+        try {
+            offset = await offsetForStream(name, url.searchParams);
+        } catch (err) {
+            console.error('seek failed:', err.message);
+        }
+
+        streamRecording(req, res, name, offset);
         return;
     }
 
