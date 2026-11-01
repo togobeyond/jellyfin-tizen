@@ -240,8 +240,12 @@ function indexFor(name) {
     if (!index) {
         index = {
             entries: [],
+            pcrPid: null,
             firstMs: null,
             lastMs: null,
+            lastRawMs: null,
+            accumulatedMs: 0,
+            lastDeltaMs: null,
             scannedBytes: 0,
             size: 0,
             scanning: false,
@@ -300,13 +304,19 @@ function scanPcrs(buffer, handler) {
             + (buffer[i + 9] << 1)
             + (buffer[i + 10] >> 7);
 
-        handler(base / 90, i);
+        const pid = ((buffer[i + 1] & 0x1f) << 8) | buffer[i + 2];
+
+        handler(base / 90, i, pid);
     }
 }
 
-function firstPcr(buffer) {
+function firstPcr(buffer, pid) {
     let found = null;
-    scanPcrs(buffer, (milliseconds, offset) => {
+    scanPcrs(buffer, (milliseconds, offset, packetPid) => {
+        if (pid != null && packetPid !== pid) {
+            return;
+        }
+
         if (!found) {
             found = { milliseconds, offset };
         }
@@ -314,12 +324,36 @@ function firstPcr(buffer) {
     return found;
 }
 
-function lastPcr(buffer) {
+function lastPcr(buffer, pid) {
     let found = null;
-    scanPcrs(buffer, (milliseconds, offset) => {
+    scanPcrs(buffer, (milliseconds, offset, packetPid) => {
+        if (pid != null && packetPid !== pid) {
+            return;
+        }
+
         found = { milliseconds, offset };
     });
     return found;
+}
+
+function choosePcrPid(buffer) {
+    const counts = new Map();
+
+    scanPcrs(buffer, (milliseconds, offset, pid) => {
+        counts.set(pid, (counts.get(pid) || 0) + 1);
+    });
+
+    let best = null;
+    let max = 0;
+
+    counts.forEach((count, pid) => {
+        if (count > max) {
+            max = count;
+            best = pid;
+        }
+    });
+
+    return best;
 }
 
 async function readWindow(handle, offset, length) {
@@ -336,10 +370,17 @@ async function primeIndex(fullPath, index) {
 
         if (index.firstMs == null) {
             const head = await readWindow(handle, 0, Math.min(1024 * 1024, stat.size));
-            const pcr = firstPcr(head);
+
+            if (index.pcrPid == null) {
+                index.pcrPid = choosePcrPid(head);
+            }
+
+            const pcr = firstPcr(head, index.pcrPid);
 
             if (pcr) {
                 index.firstMs = pcr.milliseconds;
+                index.lastRawMs = pcr.milliseconds;
+                index.accumulatedMs = 0;
                 index.entries.push({ ms: 0, offset: pcr.offset });
             }
         }
@@ -364,10 +405,17 @@ async function buildIndex(fullPath, index) {
 
             if (index.firstMs == null) {
                 const head = await readWindow(handle, 0, Math.min(1024 * 1024, stat.size));
-                const pcr = firstPcr(head);
+
+                if (index.pcrPid == null) {
+                    index.pcrPid = choosePcrPid(head);
+                }
+
+                const pcr = firstPcr(head, index.pcrPid);
 
                 if (pcr) {
                     index.firstMs = pcr.milliseconds;
+                    index.lastRawMs = pcr.milliseconds;
+                    index.accumulatedMs = 0;
                     index.entries.push({ ms: 0, offset: pcr.offset });
                 }
             }
@@ -376,19 +424,31 @@ async function buildIndex(fullPath, index) {
 
             while (offset < stat.size - INDEX_READ_BYTES) {
                 const buffer = await readWindow(handle, offset, INDEX_READ_BYTES);
-                const pcr = firstPcr(buffer);
+                const pcr = firstPcr(buffer, index.pcrPid);
 
                 if (pcr && index.firstMs != null) {
-                    const milliseconds = pcr.milliseconds - index.firstMs;
+                    let delta = pcr.milliseconds - index.lastRawMs;
+
+                    if (delta < 0 || delta > 600000) {
+                        // The PCR resets or jumps when TVHeadend concatenates
+                        // a new recording segment. Continue from the previous
+                        // sampling step instead of stalling the duration.
+                        delta = index.lastDeltaMs || 3700;
+                    }
+
+                    index.lastRawMs = pcr.milliseconds;
+
+                    if (delta > 0) {
+                        index.lastDeltaMs = delta;
+                        index.accumulatedMs += delta;
+                    }
+
+                    const milliseconds = index.accumulatedMs;
                     const last = index.entries[index.entries.length - 1];
 
-                    if (milliseconds >= 0 && (!last
-                        || (milliseconds > last.ms + 250 && milliseconds - last.ms <= 60000))) {
+                    if (!last || milliseconds > last.ms + 250) {
                         index.entries.push({ ms: milliseconds, offset: offset + pcr.offset });
-
-                        if (index.lastMs == null || milliseconds > index.lastMs) {
-                            index.lastMs = milliseconds;
-                        }
+                        index.lastMs = milliseconds;
                     }
                 }
 
@@ -474,9 +534,10 @@ async function seekInfo(name, targetParam) {
     let targetMs;
 
     if (targetParam === 'live' || targetParam == null) {
-        // Start a little before the live edge so AVPlay has a keyframe and
-        // enough buffered data to prepare.
-        targetMs = Math.max(0, durationMs - 5000);
+        // Start well before the live edge. AVPlay closes the HTTP connection
+        // when it catches up with a stream that is still being written; a
+        // 30 s margin keeps it following steadily.
+        targetMs = Math.max(0, durationMs - 30000);
     } else {
         targetMs = Math.max(0, parseFloat(targetParam) || 0);
 
@@ -521,7 +582,7 @@ async function offsetForStream(name, params) {
 
         if (start === 'live') {
             await primeIndex(fullPath, index);
-            targetMs = Math.max(0, (index.lastMs || 0) - 5000);
+            targetMs = Math.max(0, (index.lastMs || 0) - 30000);
         } else {
             targetMs = Math.max(0, ((parseFloat(start) || 0) * 1000) - SEEK_PREROLL_MS);
         }
@@ -899,6 +960,11 @@ const server = http.createServer(async (req, res) => {
             const index = indexFor(name);
             info.firstMs = index.firstMs;
             info.lastMs = index.lastMs;
+            info.pcrPid = index.pcrPid;
+            info.scannedBytes = index.scannedBytes;
+            info.size = index.size;
+            info.scanning = index.scanning;
+            info.complete = index.complete;
             info.first = index.entries.slice(0, 5);
             info.last = index.entries.slice(-5);
         }

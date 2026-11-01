@@ -626,6 +626,8 @@
         self._hlsDurationMs = 0;
         self._hlsDurationTimer = null;
         self._pendingProxySlot = 0;
+        self._streamGeneration = 0;
+        self._stopping = false;
         self._proxy = null;
         self._proxyReopenMs = null;
         self._proxySeeking = false;
@@ -674,6 +676,7 @@
                 self._proxy = null;
             }
 
+            self._stopping = false;
             self._ended = false;
             self._lastCurrentTime = 0;
             self._lastDuration = 0;
@@ -792,12 +795,18 @@
         self.setCurrentSrc = function (element, options) {
             return new Promise(function (resolve, reject) {
                 var settled = false;
+                var generation = ++self._streamGeneration;
+
                 var prepareTimer = setTimeout(function () {
                     if (!settled) {
                         settled = true;
                         console.error('[AVPlay] prepare timed out');
-                        safeStop();
-                        safeClose();
+
+                        if (generation === self._streamGeneration) {
+                            safeStop();
+                            safeClose();
+                        }
+
                         reject({
                             type: 'PLAYER_ERROR'
                         });
@@ -822,20 +831,42 @@
 
                 var listener = {
                     onbufferingstart: function () {
+                        if (generation !== self._streamGeneration) {
+                            return;
+                        }
+
                         console.debug('[AVPlay] buffering start');
                     },
 
                     onbufferingprogress: function (percent) {
+                        if (generation !== self._streamGeneration) {
+                            return;
+                        }
+
                         console.debug('[AVPlay] buffering ' + percent + '%');
                     },
 
                     onbufferingcomplete: function () {
+                        if (generation !== self._streamGeneration) {
+                            return;
+                        }
+
                         console.debug('[AVPlay] buffering complete');
                     },
 
                     onstreamcompleted: function () {
+                        if (generation !== self._streamGeneration) {
+                            return;
+                        }
+
                         console.log('[AVPlay] stream completed');
-                        if (self._ended || self._reopening) {
+
+                        if (self._ended || self._reopening || self._stopping) {
+                            return;
+                        }
+
+                        if (self._proxy) {
+                            self.reconnectProxy();
                             return;
                         }
 
@@ -844,11 +875,19 @@
                     },
 
                     oncurrentplaytime: function () {
+                        if (generation !== self._streamGeneration) {
+                            return;
+                        }
+
                         self.updateSubtitleOverlay(self.currentTime());
                         self.Events.trigger(self, 'timeupdate');
                     },
 
                     onerror: function (eventType) {
+                        if (generation !== self._streamGeneration) {
+                            return;
+                        }
+
                         console.error('[AVPlay] playback error: ' + eventType);
 
                         if (settled) {
@@ -907,19 +946,35 @@
                     self.updateDisplayRect();
 
                     webapis.avplay.prepareAsync(function () {
+                        self.selectProxyAudio();
+
+                        if (self._proxy) {
+                            setTimeout(function () {
+                                self.selectProxyAudio();
+                            }, 1000);
+                        }
+
                         finish();
                     }, function (err) {
                         console.error('[AVPlay] prepare failed', err);
-                        safeStop();
-                        safeClose();
+
+                        if (generation === self._streamGeneration) {
+                            safeStop();
+                            safeClose();
+                        }
+
                         finish({
                             type: 'MEDIA_NOT_SUPPORTED'
                         });
                     });
                 } catch (err) {
                     console.error('[AVPlay] open failed', err);
-                    safeStop();
-                    safeClose();
+
+                    if (generation === self._streamGeneration) {
+                        safeStop();
+                        safeClose();
+                    }
+
                     finish({
                         type: 'MEDIA_NOT_SUPPORTED'
                     });
@@ -963,6 +1018,7 @@
 
         self.stop = function (destroyPlayer) {
             console.log('[AVPlay] stop', destroyPlayer);
+            self._stopping = true;
             self.clearSubtitle();
             self._lastCurrentTime = self.currentTime();
             self._lastDuration = self.duration();
@@ -1000,6 +1056,7 @@
         };
 
         self.destroy = function () {
+            self._stopping = true;
             self.removeDisplayListeners();
             self.clearSubtitle();
             self.stopHlsDuration();
@@ -1188,6 +1245,64 @@
                         console.warn('[AVPlay] proxy close after failure failed', closeError);
                     }
                 });
+        };
+
+        self.reconnectProxy = function () {
+            var proxy = self._proxy;
+
+            if (!proxy) {
+                return;
+            }
+
+            if (self._proxySeeking) {
+                self._proxyQueuedSeek = self.currentTime();
+                return;
+            }
+
+            fetch(proxy.base + '/info/slot/' + proxy.slot)
+                .then(function (response) {
+                    return response.ok ? response.json() : null;
+                })
+                .then(function (info) {
+                    if (!info || !info.active) {
+                        self._ended = true;
+                        self.onEnded();
+                        return;
+                    }
+
+                    var position = self.currentTime();
+                    var target = Math.min(position, info.durationMs || position);
+
+                    if (!info.durationMs || info.durationMs - target < 5000) {
+                        target = Math.max(0, (info.durationMs || 0) - 30000);
+                    }
+
+                    self.seekProxy(target);
+                })
+                .catch(function () {
+                    self._ended = true;
+                    self.onEnded();
+                });
+        };
+
+        self.selectProxyAudio = function () {
+            if (!self._proxy || !hasAvPlay()) {
+                return;
+            }
+
+            try {
+                var tracks = webapis.avplay.getTotalTrackInfo().filter(function (track) {
+                    return track.type === 'AUDIO';
+                });
+
+                if (tracks.length) {
+                    // Live channels do not expose audio indices to Jellyfin,
+                    // so AVPlay can pick the wrong AC3 track. Use the first.
+                    webapis.avplay.setSelectTrack('AUDIO', tracks[0].index);
+                }
+            } catch (err) {
+                console.warn('[AVPlay] unable to select proxy audio', err);
+            }
         };
 
         // jellyfin-web 12 expects the player API in milliseconds.
