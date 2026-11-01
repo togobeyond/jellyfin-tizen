@@ -100,6 +100,20 @@
 - 수정: 포커스가 program cell로 이동할 때 `tizen.js`에서 guide scroller의
   `.scrollSlider` transform을 직접 계산해 선택 행을 화면 중앙에 맞춤
 
+### 라이브 TV 중단 + TVH 녹화 프록시 (0.3.10)
+
+- 증상: 모든 라이브 채널이 약 80~100초 후 `onstreamcompleted`로 종료
+- 원인: AVPlay가 Jellyfin 라이브 TV의 끝나지 않는 progressive TS 응답을
+  약 90초 뒤 스트림 종료로 처리함. 일반 TVHeadend 채널(KBS1)도 동일해서
+  프록시나 서버 문제가 아님을 확인
+- 수정: 라이브 채널(`TvChannel`)은 DirectPlay/DirectStream을 광고하지 않고
+  Jellyfin HLS(Transcode)로 재생. 라이브·프록시 채널 모두 3~6분 이상
+  연속 재생 확인 (서버는 QSV로 MPEG2→H.264, CPU 약 22%)
+- 녹화 중인 TVHeadend 파일 재생용 `tools/tvh-proxy` 추가
+  - `/playlist.m3u`: 고정 슬롯 채널 9001~9004 → 가이드 새로고침은 최초 1회만
+  - `/live/slot/N`: 현재 녹화 중인 파일을 계속 커지는 스트림으로 중계
+  - 설정: [tools/tvh-proxy/README.md](../tools/tvh-proxy/README.md)
+
 ---
 
 ## 2. 현재 상태 진단

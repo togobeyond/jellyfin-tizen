@@ -1,0 +1,88 @@
+# TVHeadend 녹화 프록시
+
+TVHeadend가 녹화 중인 `.ts` 파일을 Jellyfin 라이브 채널처럼 재생한다.
+파일이 커지는 만큼 계속 읽어서, 녹화가 끝나기 전에도 처음부터 끝까지 볼 수 있다.
+
+```text
+TVHeadend 녹화 (.ts, 계속 커짐)
+        │
+        ▼
+  tvh-proxy (이 디렉터리)
+  /live/slot/N → 파일을 chunked TS로 계속 전송
+        │
+        ▼
+Jellyfin M3U 튜너
+  http://<서버>:8099/playlist.m3u
+        │
+        ▼
+TV 앱 (0.3.10+)이 라이브 채널을 HLS로 재생
+```
+
+## 구성
+
+`node:22-alpine` 컨테이너 하나만 추가한다. Jellyfin 컨테이너는 그대로 둔다.
+
+```yaml
+  tvh-proxy:
+    image: node:22-alpine
+    container_name: tvh-proxy
+    restart: unless-stopped
+    command: node /app/server.js
+    network_mode: "host"
+    volumes:
+      - /home/carrot/jellyfin/tvh-proxy:/app:ro
+      - /media/Win/recordings:/recordings:ro
+    environment:
+      TZ: Asia/Seoul
+      PORT: "8099"
+      RECORDINGS_DIR: /recordings
+      PUBLIC_URL: "http://192.168.1.4:8099"
+```
+
+```sh
+docker compose up -d tvh-proxy
+curl http://192.168.1.4:8099/health
+```
+
+## Jellyfin 설정
+
+1. **Live TV → Tuner Devices → Add Tuner → M3U**
+2. URL: `http://192.168.1.4:8099/playlist.m3u`
+3. **Refresh Guide** 한 번 실행
+4. 채널 `9001 TVH 녹화 1` ~ `9004 TVH 녹화 4` 생성
+
+슬롯이 고정되어 있어서, 새 녹화가 시작되어도 가이드 새로고침이 필요 없다.
+녹화가 하나면 `TVH 녹화 1`, 두 개면 1·2 순서로 매핑된다.
+현재 매핑은 `/health`에서 확인할 수 있다.
+
+> 앱 0.3.10부터 라이브 채널은 HLS로 재생된다. 그 이전 버전은 약 90초 후 멈춘다.
+
+## 환경 변수
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `PORT` | `8099` | HTTP 포트 |
+| `RECORDINGS_DIR` | `/recordings` | 녹화 디렉터리 (읽기 전용) |
+| `PUBLIC_URL` | 요청 Host | M3U에 쓸 외부 주소 |
+| `SLOT_COUNT` | `4` | 고정 채널 개수 |
+| `SLOT_FIRST_CHANNEL` | `9001` | 첫 채널 번호 |
+| `ACTIVE_WINDOW_MS` | `120000` | 최근 수정된 파일을 녹화 중으로 볼 시간 |
+| `IDLE_GRACE_MS` | `30000` | 파일이 자라지 않을 때 스트림을 닫는 시간 |
+
+## 엔드포인트
+
+| 경로 | 설명 |
+| --- | --- |
+| `/playlist.m3u` | 고정 슬롯 채널 (Jellyfin 튜너용) |
+| `/playlist.m3u?dynamic=1` | 녹화별 채널 (디버그용, 새로고침 필요) |
+| `/playlist.m3u?all=1` | 완료된 녹화까지 모두 표시 |
+| `/live/slot/1` | 슬롯 1의 녹화를 계속 스트리밍 (없으면 404) |
+| `/live/<파일명>` | 특정 녹화를 직접 스트리밍 |
+| `/health` | 상태와 슬롯 매핑 |
+
+## 전제
+
+- TVHeadend DVR 프로필이 **MPEG-TS (pass)** 여야 한다. MKV 녹화는 지원하지 않는다.
+- 녹화 파일이 `RECORDINGS_DIR` 바로 아래에 있어야 한다. (하위 폴더는 스캔하지 않음)
+- 프록시 컨테이너가 녹화 디렉터리를 읽을 수 있어야 한다.
+- 녹화가 끝나면 슬롯이 비고, 채널은 404가 된다. 채널 자체는 목록에 남는다.
