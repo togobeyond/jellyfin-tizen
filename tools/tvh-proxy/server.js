@@ -29,14 +29,27 @@ const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const ACTIVE_WINDOW_MS = parseInt(process.env.ACTIVE_WINDOW_MS || '120000', 10);
 const IDLE_GRACE_MS = parseInt(process.env.IDLE_GRACE_MS || '30000', 10);
 const SLOT_COUNT = parseInt(process.env.SLOT_COUNT || '4', 10);
-const SLOT_FIRST_CHANNEL = parseInt(process.env.SLOT_FIRST_CHANNEL || '9001', 10);
+// "1" -> channels 1.1, 1.2, ... (sorted before the 2.1 channel).
+const SLOT_CHANNEL_BASE = process.env.SLOT_CHANNEL_BASE || '1';
 const SCAN_MS = 2000;
 const VIDEO_EXTENSIONS = new Set(['.ts', '.m2ts', '.mts', '.trp']);
+
+// Optional: refresh the Jellyfin guide when the recording set changes, so the
+// channel names follow the program being recorded.
+const JELLYFIN_URL = (process.env.JELLYFIN_URL || '').replace(/\/$/, '');
+const JELLYFIN_TOKEN = process.env.JELLYFIN_TOKEN || '';
+const REFRESH_DEBOUNCE_MS = 5000;
+const REFRESH_MIN_INTERVAL_MS = 30000;
 
 const state = new Map();
 // Recording name -> slot number. Kept until the recording stops so a running
 // recording does not move between slots when another one starts or ends.
 const slotAssignments = new Map();
+
+let refreshTimer = null;
+let lastRefreshAt = 0;
+let lastSignature = null;
+let guideTaskId = null;
 
 function isVideoFile(name) {
     return VIDEO_EXTENSIONS.has(path.extname(name).toLowerCase());
@@ -101,6 +114,8 @@ function scan() {
             state.delete(name);
         }
     }
+
+    scheduleJellyfinRefresh();
 }
 
 function activeRecordings() {
@@ -166,6 +181,100 @@ function stableChannelNumber(name) {
     return 9000 + (Math.abs(hash) % 900);
 }
 
+function slotChannelNumber(slot) {
+    return SLOT_CHANNEL_BASE + '.' + slot;
+}
+
+function recordingLabel(title) {
+    // TVHeadend names recordings "<channel>.<program>..<date>.ts".
+    return String(title || '')
+        .replace(/\.\.\d{4}-\d{2}-\d{2}.*$/, '')
+        .replace(/"/g, '')
+        .trim()
+        .slice(0, 60);
+}
+
+function slotChannelName(slot, recording) {
+    if (!recording) {
+        return 'TVH 녹화 ' + slot;
+    }
+
+    return 'TVH 녹화 ' + slot + ' · ' + recordingLabel(recording.title);
+}
+
+function playlistSignature() {
+    return slotRecordings()
+        .map((entry) => entry.slot + '=' + (entry.recording ? entry.recording.title : ''))
+        .join('|');
+}
+
+function scheduleJellyfinRefresh() {
+    if (!JELLYFIN_URL || !JELLYFIN_TOKEN) {
+        return;
+    }
+
+    const signature = playlistSignature();
+
+    if (signature === lastSignature) {
+        return;
+    }
+
+    lastSignature = signature;
+
+    if (refreshTimer) {
+        clearTimeout(refreshTimer);
+    }
+
+    refreshTimer = setTimeout(triggerJellyfinRefresh, REFRESH_DEBOUNCE_MS);
+}
+
+async function triggerJellyfinRefresh() {
+    refreshTimer = null;
+
+    const wait = REFRESH_MIN_INTERVAL_MS - (Date.now() - lastRefreshAt);
+
+    if (wait > 0) {
+        refreshTimer = setTimeout(triggerJellyfinRefresh, wait);
+        return;
+    }
+
+    const headers = { Authorization: 'MediaBrowser Token=' + JELLYFIN_TOKEN };
+
+    try {
+        if (!guideTaskId) {
+            const response = await fetch(JELLYFIN_URL + '/ScheduledTasks', { headers });
+
+            if (!response.ok) {
+                throw new Error('ScheduledTasks returned ' + response.status);
+            }
+
+            const tasks = await response.json();
+            const task = tasks.find((candidate) => candidate.Key === 'RefreshGuide');
+            guideTaskId = task ? task.Id : null;
+        }
+
+        if (!guideTaskId) {
+            console.error('Jellyfin RefreshGuide task not found');
+            return;
+        }
+
+        const response = await fetch(JELLYFIN_URL + '/ScheduledTasks/Running/' + guideTaskId, {
+            method: 'POST',
+            headers
+        });
+
+        lastRefreshAt = Date.now();
+
+        if (response.ok) {
+            console.log('Triggered Jellyfin guide refresh for new slot names');
+        } else {
+            console.error('Jellyfin guide refresh returned ' + response.status);
+        }
+    } catch (err) {
+        console.error('Jellyfin guide refresh failed:', err.message);
+    }
+}
+
 function requestBaseUrl(req) {
     if (PUBLIC_URL) {
         return PUBLIC_URL;
@@ -190,13 +299,13 @@ function playlist(req, res) {
         const baseUrl = requestBaseUrl(req);
         const lines = ['#EXTM3U'];
 
-        for (let slot = 1; slot <= SLOT_COUNT; slot++) {
-            const channel = SLOT_FIRST_CHANNEL + slot - 1;
-            const name = 'TVH 녹화 ' + slot;
+        for (const entry of slotRecordings()) {
+            const channel = slotChannelNumber(entry.slot);
+            const name = slotChannelName(entry.slot, entry.recording);
 
-            lines.push('#EXTINF:-1 tvg-id="tvh-rec-slot-' + slot + '" tvg-chno="' + channel
+            lines.push('#EXTINF:-1 tvg-id="tvh-rec-slot-' + entry.slot + '" tvg-chno="' + channel
                 + '" tvg-name="' + name + '",' + name);
-            lines.push(baseUrl + '/live/slot/' + slot);
+            lines.push(baseUrl + '/live/slot/' + entry.slot);
         }
 
         sendPlaylist(res, lines);
@@ -350,7 +459,7 @@ const server = http.createServer((req, res) => {
             active: activeRecordings().length,
             slots: slotRecordings().map((entry) => ({
                 slot: entry.slot,
-                channel: SLOT_FIRST_CHANNEL + entry.slot - 1,
+                channel: slotChannelNumber(entry.slot),
                 name: entry.recording ? entry.recording.title : null
             }))
         }));

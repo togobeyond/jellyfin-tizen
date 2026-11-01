@@ -37,6 +37,8 @@ TV 앱 (0.3.10+)이 라이브 채널을 HLS로 재생
       PORT: "8099"
       RECORDINGS_DIR: /recordings
       PUBLIC_URL: "http://192.168.1.4:8099"
+      JELLYFIN_URL: "http://127.0.0.1:8096"
+      JELLYFIN_TOKEN: "<Jellyfin API 키>"
 ```
 
 ```sh
@@ -49,13 +51,19 @@ curl http://192.168.1.4:8099/health
 1. **Live TV → Tuner Devices → Add Tuner → M3U**
 2. URL: `http://192.168.1.4:8099/playlist.m3u`
 3. **Refresh Guide** 한 번 실행
-4. 채널 `9001 TVH 녹화 1` ~ `9004 TVH 녹화 4` 생성
+4. 채널 `1.1 TVH 녹화 1` ~ `1.4 TVH 녹화 4` 생성 (기존 `2.1` 채널보다 앞)
 
 슬롯이 고정되어 있어서, 새 녹화가 시작되어도 가이드 새로고침이 필요 없다.
 녹화가 하나면 `TVH 녹화 1`, 두 개면 1·2 순서로 매핑된다.
 현재 매핑은 `/health`에서 확인할 수 있다.
 
-> 앱 0.3.10부터 라이브 채널은 HLS로 재생된다. 그 이전 버전은 약 90초 후 멈춘다.
+`JELLYFIN_URL`과 `JELLYFIN_TOKEN`을 설정하면, 녹화가 시작·종료될 때
+프록시가 Jellyfin 가이드 갱신을 자동으로 요청한다. 그래서 채널 이름이
+`TVH 녹화 1 · <녹화 중인 프로그램>`으로 자동 변경된다. 토큰은
+Jellyfin **대시보드 → API 키**에서 새로 만든다.
+
+> 채널 이름은 Jellyfin이 캐시하므로, 자동 갱신을 쓰지 않으면
+> 녹화가 바뀌어도 이름이 그대로일 수 있다.
 
 ## 환경 변수
 
@@ -65,7 +73,9 @@ curl http://192.168.1.4:8099/health
 | `RECORDINGS_DIR` | `/recordings` | 녹화 디렉터리 (읽기 전용) |
 | `PUBLIC_URL` | 요청 Host | M3U에 쓸 외부 주소 |
 | `SLOT_COUNT` | `4` | 고정 채널 개수 |
-| `SLOT_FIRST_CHANNEL` | `9001` | 첫 채널 번호 |
+| `SLOT_CHANNEL_BASE` | `1` | 채널 번호 앞자리 (`1` → `1.1`~`1.4`) |
+| `JELLYFIN_URL` | 없음 | 가이드 자동 갱신용 Jellyfin 주소 |
+| `JELLYFIN_TOKEN` | 없음 | 가이드 자동 갱신용 API 키 |
 | `ACTIVE_WINDOW_MS` | `120000` | 최근 수정된 파일을 녹화 중으로 볼 시간 |
 | `IDLE_GRACE_MS` | `30000` | 파일이 자라지 않을 때 스트림을 닫는 시간 |
 

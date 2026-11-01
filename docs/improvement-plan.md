@@ -103,7 +103,9 @@
 ### TVH 녹화 프록시 (0.3.10 / 0.3.11)
 
 - 녹화 중인 TVHeadend 파일 재생용 `tools/tvh-proxy` 추가
-  - `/playlist.m3u`: 고정 슬롯 채널 9001~9004 → 가이드 새로고침은 최초 1회만
+  - `/playlist.m3u`: 고정 슬롯 채널 **1.1~1.4** (기존 2.1 채널보다 앞)
+  - 채널 이름에 녹화 중인 프로그램 표시 (`TVH 녹화 1 · <프로그램>`)
+  - 녹화 시작/종료 시 Jellyfin 가이드 자동 갱신 (API 키 설정 시)
   - `/live/slot/N`: 현재 녹화 중인 파일을 계속 커지는 스트림으로 중계
   - 설정: [tools/tvh-proxy/README.md](../tools/tvh-proxy/README.md)
 - 0.3.10에서 라이브 채널을 HLS로 강제했으나, TS 라이브 DirectPlay가
