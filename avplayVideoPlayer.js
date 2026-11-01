@@ -125,9 +125,13 @@
         return conditions;
     }
 
-    function buildDeviceProfile() {
+    function buildDeviceProfile(item) {
         var videoCodecs = getVideoCodecs();
         var audioCodecs = getAudioCodecs();
+        // AVPlay ends an endless progressive TS (Jellyfin live TV DirectPlay)
+        // after roughly 90 seconds. Play live channels through Jellyfin's HLS
+        // output instead; the HLS playlist keeps rolling for hours.
+        var isLiveChannel = !!(item && item.Type === 'TvChannel');
         var videoConditions = [
             {
                 Condition: 'NotEquals',
@@ -280,6 +284,11 @@
                     Type: 'Audio'
                 }
             ].filter(function (profile) {
+                // Live TV: never advertise progressive TS DirectPlay.
+                if (isLiveChannel && profile.Container === 'ts,m2ts,mts,trp') {
+                    return false;
+                }
+
                 // MKV progressive playback is unreliable on Tizen 4/5 for
                 // both H.264 and HEVC. Remux to HLS TS instead: the server
                 // copies video and audio, so quality/HDR are preserved.
@@ -290,7 +299,9 @@
                 {
                     Container: 'ts',
                     Type: 'Video',
-                    VideoCodec: 'h264,hevc',
+                    // mpeg2video lets Jellyfin remux live MPEG-2 channels into
+                    // HLS TS without re-encoding (the TV decodes MPEG-2).
+                    VideoCodec: 'h264,hevc,mpeg2video',
                     AudioCodec: 'aac,ac3,eac3,mp3',
                     Protocol: 'hls',
                     Context: 'Streaming',
@@ -545,12 +556,19 @@
             return hasAvPlay() && (mediaType || '').toLowerCase() === 'video';
         };
 
-        self.supportsPlayMethod = function () {
+        self.supportsPlayMethod = function (playMethod, item) {
+            // Live TV: only accept Jellyfin's HLS output. DirectPlay and
+            // DirectStream both hand AVPlay an endless progressive TS, which
+            // stops after ~90 seconds on Tizen 4.
+            if (item && item.Type === 'TvChannel' && playMethod !== 'Transcode') {
+                return false;
+            }
+
             return true;
         };
 
-        self.getDeviceProfile = function () {
-            return Promise.resolve(buildDeviceProfile());
+        self.getDeviceProfile = function (item) {
+            return Promise.resolve(buildDeviceProfile(item));
         };
 
         self.currentSrc = function () {
