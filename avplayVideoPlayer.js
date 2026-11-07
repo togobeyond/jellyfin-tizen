@@ -642,7 +642,6 @@
         self._lastDuration = 0;
         self._hlsDurationMs = 0;
         self._hlsDurationTimer = null;
-        self._pendingProxySlot = 0;
         self._streamGeneration = 0;
         self._stopping = false;
         self._proxy = null;
@@ -661,7 +660,6 @@
         };
 
         self.getDeviceProfile = function (item) {
-            self._pendingProxySlot = proxySlotFromItem(item);
             return Promise.resolve(buildDeviceProfile(item));
         };
 
@@ -676,7 +674,10 @@
                 || (self.playbackManager && self.playbackManager.currentItem
                     ? self.playbackManager.currentItem()
                     : null);
-            var proxySlot = proxySlotFromItem(currentItem) || self._pendingProxySlot;
+            // Only the current item decides. A cached slot from an earlier
+            // proxy-channel playback must never turn a normal live channel
+            // into an empty proxy slot.
+            var proxySlot = proxySlotFromItem(currentItem);
 
             if (!proxySlot) {
                 var pathMatch = /\/live\/slot\/(\d+)/.exec(
