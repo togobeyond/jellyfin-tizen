@@ -102,12 +102,13 @@
 
 ### TVH 녹화 프록시 (0.3.10 / 0.3.11)
 
-- 녹화 중인 TVHeadend 파일 재생용 `tools/tvh-proxy` 추가
+- 녹화 중인 TVHeadend 파일 재생용 프록시 추가
+  (별도 리포지토리: <https://github.com/togobeyond/jellyfin-tvhproxy>)
   - `/playlist.m3u`: 고정 슬롯 채널 **1.1~1.4** (기존 2.1 채널보다 앞)
   - 채널 이름에 녹화 중인 프로그램 표시 (`TVH 녹화 1 · <프로그램>`)
   - 녹화 시작/종료 시 Jellyfin 가이드 자동 갱신 (API 키 설정 시)
   - `/live/slot/N`: 현재 녹화 중인 파일을 계속 커지는 스트림으로 중계
-  - 설정: [tools/tvh-proxy/README.md](../tools/tvh-proxy/README.md)
+  - 설정: <https://github.com/togobeyond/jellyfin-tvhproxy>
 - 0.3.12~0.3.15: 프록시 채널을 HLS로 재생해 탐색을 시도
   - AVPlay가 자라는 EVENT 재생목록의 길이를 0으로 보고해 `#EXTINF` 합계로 보정
   - 다만 HLS는 Jellyfin이 변환해 둔 구간까지만 탐색 가능 (웹 플레이어와 같은 한계)

@@ -76,7 +76,7 @@
     }
 
     function isRecordingProxyChannel(item) {
-        // tools/tvh-proxy names its slot channels "TVH 녹화 N · <program>".
+        // The TVH proxy names its slot channels "TVH 녹화 N · <program>".
         return !!(item && item.Type === 'TvChannel'
             && /^TVH\s*(녹화|Recording)/i.test(item.Name || ''));
     }
