@@ -102,6 +102,23 @@
         return urlMatch ? 'http://' + urlMatch[1] + ':8099' : null;
     }
 
+    // Once the recording name is known, use /live/<name> and /info/<name>.
+    // The slot becomes empty when TVHeadend finishes the recording, but the
+    // completed file can still be played and seeked.
+    function proxyStreamUrl(proxy, fromMs) {
+        var path = proxy.name
+            ? '/live/' + encodeURIComponent(proxy.name)
+            : '/live/slot/' + proxy.slot;
+
+        return proxy.base + path + '?from=' + (fromMs / 1000).toFixed(3);
+    }
+
+    function proxyInfoPath(proxy) {
+        return proxy.name
+            ? '/info/' + encodeURIComponent(proxy.name)
+            : '/info/slot/' + proxy.slot;
+    }
+
     function getVideoCodecs() {
         var codecs = 'h264,hevc,mpeg2video,vc1,msmpeg4v2,vp8,vp9';
 
@@ -1124,20 +1141,21 @@
 
             self._proxyReopenMs = null;
 
-            var duration = self._proxy && self._proxy.slot === slot
-                ? self._proxy.durationMs
-                : 0;
+            var sameSlot = self._proxy && self._proxy.slot === slot;
+            var duration = sameSlot ? self._proxy.durationMs : 0;
+            var name = sameSlot ? self._proxy.name : null;
 
             self._proxy = {
                 slot: slot,
                 base: base,
+                name: name,
                 baseMs: fromMs,
                 durationMs: duration,
                 timer: null
             };
 
             var copy = Object.assign({}, options);
-            copy.url = base + '/live/slot/' + slot + '?from=' + (fromMs / 1000).toFixed(3);
+            copy.url = proxyStreamUrl(self._proxy, fromMs);
 
             self.startProxyInfo();
             return copy;
@@ -1157,13 +1175,19 @@
 
                 var proxy = self._proxy;
 
-                fetch(proxy.base + '/info/slot/' + proxy.slot)
+                fetch(proxy.base + proxyInfoPath(proxy))
                     .then(function (response) {
                         return response.ok ? response.json() : null;
                     })
                     .then(function (info) {
-                        if (info && info.durationMs > 0 && self._proxy === proxy) {
-                            proxy.durationMs = info.durationMs;
+                        if (info && self._proxy === proxy) {
+                            if (info.name) {
+                                proxy.name = info.name;
+                            }
+
+                            if (info.durationMs > 0) {
+                                proxy.durationMs = info.durationMs;
+                            }
                         }
                     })
                     .catch(function () {});
@@ -1199,16 +1223,33 @@
             self._proxySeeking = true;
             self._reopening = true;
 
-            return fetch(proxy.base + '/info/slot/' + proxy.slot + '?t=' + query)
+            return fetch(proxy.base + proxyInfoPath(proxy) + '?t=' + query)
                 .then(function (response) {
                     return response.ok ? response.json() : null;
                 })
                 .then(function (info) {
-                    if (info && info.durationMs > 0) {
+                    if (!info) {
+                        // The slot is empty and the file is gone. Do not reopen
+                        // a 404 URL, which leaves AVPlay stuck.
+                        self._proxySeeking = false;
+                        self._reopening = false;
+
+                        if (self.toast) {
+                            self.toast('녹화 파일을 찾을 수 없습니다');
+                        }
+
+                        return;
+                    }
+
+                    if (info.name) {
+                        proxy.name = info.name;
+                    }
+
+                    if (info.durationMs > 0) {
                         proxy.durationMs = info.durationMs;
                     }
 
-                    self._proxyReopenMs = info ? info.startMs : target;
+                    self._proxyReopenMs = info.startMs;
 
                     try {
                         safeStop();
@@ -1259,15 +1300,21 @@
                 return;
             }
 
-            fetch(proxy.base + '/info/slot/' + proxy.slot)
+            fetch(proxy.base + proxyInfoPath(proxy))
                 .then(function (response) {
                     return response.ok ? response.json() : null;
                 })
                 .then(function (info) {
                     if (!info || !info.active) {
+                        // The recording finished (the slot is now empty).
+                        // Playback has reached the end of the completed file.
                         self._ended = true;
                         self.onEnded();
                         return;
+                    }
+
+                    if (info.name) {
+                        proxy.name = info.name;
                     }
 
                     var position = self.currentTime();

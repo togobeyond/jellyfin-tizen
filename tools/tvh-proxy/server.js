@@ -517,13 +517,11 @@ async function seekInfo(name, targetParam) {
 
     await primeIndex(fullPath, index);
 
-    const durationMs = Math.max(0, index.lastMs || 0);
-
     if (targetParam === undefined) {
         buildIndex(fullPath, index);
         return {
             name,
-            durationMs,
+            durationMs: Math.max(0, index.lastMs || 0),
             startMs: 0,
             offset: 0,
             active: recording.active,
@@ -531,6 +529,15 @@ async function seekInfo(name, targetParam) {
         };
     }
 
+    const build = buildIndex(fullPath, index);
+
+    if (!index.complete) {
+        await Promise.race([build, new Promise((resolve) => setTimeout(resolve, 10000))]);
+    }
+
+    // Read the duration after the build: the first request for a completed
+    // recording starts with an empty index.
+    const durationMs = Math.max(0, index.lastMs || 0);
     let targetMs;
 
     if (targetParam === 'live' || targetParam == null) {
@@ -544,12 +551,6 @@ async function seekInfo(name, targetParam) {
         if (targetMs > durationMs - 1500) {
             targetMs = Math.max(0, durationMs - SEEK_PREROLL_MS);
         }
-    }
-
-    const build = buildIndex(fullPath, index);
-
-    if (!index.complete) {
-        await Promise.race([build, new Promise((resolve) => setTimeout(resolve, 10000))]);
     }
 
     const startMs = timeForMs(index, targetMs);
