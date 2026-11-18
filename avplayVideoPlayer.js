@@ -75,8 +75,29 @@
         return getTizenVersion() >= 6.5;
     }
 
+    function postDebug(event, data) {
+        try {
+            var payload = { at: Date.now(), event: event };
+
+            if (data) {
+                Object.keys(data).forEach(function (key) {
+                    payload[key] = data[key];
+                });
+            }
+
+            fetch('http://192.168.1.4:8099/debug', {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'text/plain' },
+                body: JSON.stringify(payload)
+            }).catch(function () {});
+        } catch (err) {
+            console.warn('[AVPlay] debug beacon failed', err);
+        }
+    }
+
     function isRecordingProxyChannel(item) {
-        // The TVH proxy names its slot channels "TVH 녹화 N · <program>".
+        // tools/tvh-proxy names its slot channels "TVH 녹화 N · <program>".
         return !!(item && item.Type === 'TvChannel'
             && /^TVH\s*(녹화|Recording)/i.test(item.Name || ''));
     }
@@ -642,12 +663,15 @@
         self._lastDuration = 0;
         self._hlsDurationMs = 0;
         self._hlsDurationTimer = null;
+        self._pendingProxySlot = 0;
         self._streamGeneration = 0;
         self._stopping = false;
         self._proxy = null;
         self._proxyReopenMs = null;
         self._proxySeeking = false;
         self._proxyQueuedSeek = null;
+        self._proxyLastStartMs = null;
+        self._proxySeekRetries = 0;
         self._reopening = false;
         self._subtitleCues = [];
 
@@ -660,6 +684,7 @@
         };
 
         self.getDeviceProfile = function (item) {
+            self._pendingProxySlot = proxySlotFromItem(item);
             return Promise.resolve(buildDeviceProfile(item));
         };
 
@@ -674,10 +699,7 @@
                 || (self.playbackManager && self.playbackManager.currentItem
                     ? self.playbackManager.currentItem()
                     : null);
-            // Only the current item decides. A cached slot from an earlier
-            // proxy-channel playback must never turn a normal live channel
-            // into an empty proxy slot.
-            var proxySlot = proxySlotFromItem(currentItem);
+            var proxySlot = proxySlotFromItem(currentItem) || self._pendingProxySlot;
 
             if (!proxySlot) {
                 var pathMatch = /\/live\/slot\/(\d+)/.exec(
@@ -1205,7 +1227,7 @@
             }
         };
 
-        self.seekProxy = function (milliseconds) {
+        self.seekProxy = function (milliseconds, isRetry) {
             var proxy = self._proxy;
 
             if (!proxy) {
@@ -1215,6 +1237,10 @@
             if (self._proxySeeking) {
                 self._proxyQueuedSeek = milliseconds;
                 return Promise.resolve();
+            }
+
+            if (!isRetry) {
+                self._proxySeekRetries = 0;
             }
 
             var target = Math.max(0, milliseconds);
@@ -1251,6 +1277,7 @@
                     }
 
                     self._proxyReopenMs = info.startMs;
+                    self._proxyLastStartMs = info.startMs;
 
                     try {
                         safeStop();
@@ -1280,12 +1307,47 @@
                     self._reopening = false;
                     console.warn('[AVPlay] proxy seek failed', err);
 
+                    postDebug('seek-error', {
+                        target: milliseconds,
+                        startMs: self._proxyLastStartMs,
+                        retries: self._proxySeekRetries,
+                        error: (err && (err.type || err.message)) || String(err)
+                    });
+
                     try {
                         safeStop();
                         safeClose();
                     } catch (closeError) {
                         console.warn('[AVPlay] proxy close after failure failed', closeError);
                     }
+
+                    if (self._proxySeekRetries < 2 && self._proxyLastStartMs != null) {
+                        self._proxySeekRetries += 1;
+
+                        var retryTarget = Math.max(0, self._proxyLastStartMs - 15000);
+
+                        postDebug('seek-retry', {
+                            startMs: self._proxyLastStartMs,
+                            retryTarget: retryTarget,
+                            retries: self._proxySeekRetries
+                        });
+
+                        return self.seekProxy(retryTarget, true);
+                    }
+
+                    if (self.toast) {
+                        self.toast('탐색 지점을 재생할 수 없습니다. 앱을 새로고침합니다.');
+                    }
+
+                    // A failed prepare can leave AVPlay stuck until the whole
+                    // app restarts. Reload the web client instead.
+                    setTimeout(function () {
+                        try {
+                            window.location.reload();
+                        } catch (reloadError) {
+                            console.warn('[AVPlay] reload failed', reloadError);
+                        }
+                    }, 1500);
                 });
         };
 
