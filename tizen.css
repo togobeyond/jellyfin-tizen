@@ -50,3 +50,241 @@ body.hide-scroll .avplayVideoPlayer {
 #videoOsdPage {
     z-index: 3 !important;
 }
+
+/* Library scan button and progress dialog (libraryScan.js). */
+.libraryScanButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45em;
+    flex-shrink: 0;
+    box-sizing: border-box;
+    height: 2.6em;
+    margin: 0 0.4em;
+    padding: 0 0.9em;
+    border: 2px solid rgba(255, 255, 255, 0.28);
+    border-radius: 1.3em;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    font: inherit;
+    font-size: 0.95em;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.libraryScanButton[hidden] {
+    display: none;
+}
+
+.libraryScanButton:hover {
+    background: rgba(255, 255, 255, 0.22);
+}
+
+.libraryScanButton:focus,
+.libraryScanButton:focus-visible {
+    outline: none;
+    border-color: #fff;
+    background: #fff;
+    color: #101010;
+    box-shadow: 0 0 0 0.18em rgba(255, 255, 255, 0.45);
+}
+
+.libraryScanButton.is-error {
+    border-color: #e57373;
+}
+
+.libraryScanButtonIcon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.35em;
+    height: 1.35em;
+}
+
+.libraryScanButtonIcon svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.libraryScanButton.is-running .libraryScanButtonIcon {
+    animation: libraryScanSpin 1.1s linear infinite;
+}
+
+.libraryScanFloat {
+    position: fixed;
+    top: 0.8rem;
+    right: 1.2rem;
+    z-index: 1000;
+}
+
+.libraryScanOverlay {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 2147483000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    padding: 4vh 4vw;
+    background: rgba(0, 0, 0, 0.72);
+    user-select: none;
+}
+
+.libraryScanOverlay[hidden] {
+    display: none;
+}
+
+.libraryScanDialog {
+    width: 64vw;
+    max-width: 760px;
+}
+
+.libraryScanCard {
+    box-sizing: border-box;
+    padding: 2.2rem 2.4rem 2rem;
+    border-radius: 0.9rem;
+    background: #1d1d1d;
+    color: #fff;
+    font-family: inherit;
+    text-align: left;
+    box-shadow: 0 1.2rem 4rem rgba(0, 0, 0, 0.65);
+}
+
+.libraryScanTitle {
+    margin: 0 0 0.7rem;
+    font-size: 1.9rem;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.libraryScanStatus {
+    min-height: 1.5em;
+    margin: 0 0 1.2rem;
+    font-size: 1.2rem;
+    line-height: 1.4;
+    opacity: 0.92;
+}
+
+.libraryScanProgress {
+    position: relative;
+    height: 0.8rem;
+    overflow: hidden;
+    border-radius: 0.4rem;
+    background: rgba(255, 255, 255, 0.16);
+}
+
+.libraryScanProgress[hidden] {
+    display: none;
+}
+
+.libraryScanProgressFill {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: #00a4dc;
+    transition: width 350ms ease;
+}
+
+.libraryScanProgress.is-indeterminate .libraryScanProgressFill {
+    width: 35% !important;
+    animation: libraryScanIndeterminate 1.25s ease-in-out infinite;
+}
+
+.libraryScanMeta {
+    margin: 0.8rem 0 0;
+    font-size: 0.95rem;
+    line-height: 1.4;
+    opacity: 0.62;
+}
+
+.libraryScanError {
+    margin: 1rem 0 0;
+    color: #ff8a80;
+    font-size: 1rem;
+    line-height: 1.4;
+}
+
+.libraryScanError[hidden] {
+    display: none;
+}
+
+.libraryScanActions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.7rem;
+    margin-top: 1.6rem;
+}
+
+.libraryScanAction {
+    padding: 0.75em 1.35em;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-radius: 0.55rem;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font: inherit;
+    font-size: 1.05rem;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.libraryScanAction[hidden] {
+    display: none;
+}
+
+.libraryScanActionPrimary {
+    border-color: #00a4dc;
+    background: #00a4dc;
+}
+
+.libraryScanActionPrimary.is-danger {
+    border-color: #b33a3a;
+    background: #b33a3a;
+}
+
+.libraryScanActionClose {
+    background: transparent;
+}
+
+.libraryScanAction:focus,
+.libraryScanAction:focus-visible {
+    outline: none;
+    border-color: #fff;
+    background: #fff;
+    color: #101010;
+    box-shadow: 0 0 0 0.18em rgba(255, 255, 255, 0.45);
+}
+
+.libraryScanAction:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+@keyframes libraryScanSpin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes libraryScanIndeterminate {
+    from {
+        transform: translateX(-120%);
+    }
+
+    to {
+        transform: translateX(320%);
+    }
+}

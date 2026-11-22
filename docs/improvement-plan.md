@@ -152,6 +152,9 @@
 - 0.3.29: 최종 탐색 실패 시 **웹뷰 자동 새로고침**으로 AVPlay 먹통 복구
   - 프록시: 탐색 시작을 **PAT(PSI) + 영상 키프레임(I/GOP)** 에 정렬
   - 검증(2026-11-18): tvN 녹화 FF 정상, 실패 후 라이브 복구 확인
+- 0.3.30: TV 헤더 오른쪽에 **전체 라이브러리 스캔** 버튼 + 진행률
+  - `RefreshLibrary` 예약 작업을 시작/취소하고 진행률을 2초 간격으로 표시
+  - 라이브러리 스캔은 관리자만 실행 가능하므로 일반 사용자에게는 버튼을 숨김
 
 ---
 
@@ -162,11 +165,11 @@
 | 항목 | 상태 |
 | --- | --- |
 | 브랜치 | `master` = upstream과 동일 (fork 이후 커밋 없음) |
-| 앱 셸 | `tizen.js` (NativeShell shim) + jellyfin-web `dist/` |
-| 주입 | `gulpfile.babel.js`가 `tizen.js`, `$WEBAPIS/webapis/webapis.js`, CSP를 `index.html`에 삽입 |
+| 앱 셸 | `tizen.js` (NativeShell shim), AVPlay/라이브러리 스캔 보조 스크립트 + jellyfin-web `dist/` |
+| 주입 | `gulpfile.babel.js`가 `tizen.js`, `avplayVideoPlayer.js`, `libraryScan.js`, `$WEBAPIS/webapis/webapis.js`, CSP를 `index.html`에 삽입 |
 | 웹 | jellyfin-web `release-12.z` (12.3.0, 서버 12.3과 일치) |
 | 패키징 | `config.xml` 1개, `icon.png`, `www/` |
-| 버전 | `0.1.0` (config.xml과 package.json) |
+| 버전 | `0.3.30` (`config.xml`, `package.json`) |
 
 `tizen.js`는 10.8 시절 코드가 일부 남아 있다. 예를 들어
 `enableMkvProgressive` 옵션은 10.10의 `browserDeviceProfile.js`에서 더 이상 읽지 않는다(dead option).

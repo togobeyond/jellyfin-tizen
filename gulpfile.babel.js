@@ -125,6 +125,12 @@ function modifyIndex() {
             avplay.setAttribute('defer', '');
             injectTarget.insertBefore(avplay, apploader);
 
+            // inject libraryScan.js
+            const libraryScan = this.createElement('script');
+            libraryScan.setAttribute('src', '../libraryScan.js');
+            libraryScan.setAttribute('defer', '');
+            injectTarget.insertBefore(libraryScan, apploader);
+
             return this;
         }))
         .pipe(gulp.dest(paths.index.dest))
