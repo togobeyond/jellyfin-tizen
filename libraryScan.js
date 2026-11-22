@@ -13,11 +13,6 @@
     var PANEL_POLL_MS = 3000;
     var HIDDEN_POLL_MS = 30000;
 
-    var REFRESH_ICON = '<svg viewBox="0 0 24 24" width="1.35em" height="1.35em" '
-        + 'fill="currentColor" aria-hidden="true" focusable="false">'
-        + '<path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6'
-        + 'c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>';
-
     var strings = getStrings();
 
     var state = {
@@ -269,15 +264,17 @@
 
         var button = document.createElement('button');
         button.type = 'button';
-        button.className = 'libraryScanButton';
+        // Match Jellyfin's other header actions so its TV focus styling and
+        // geometric navigation recognize this injected control.
+        button.className = 'paper-icon-button-light show-focus headerButton '
+            + 'headerButtonRight libraryScanButton';
         button.setAttribute('aria-label', strings.title);
-        button.innerHTML = '<span class="libraryScanButtonIcon" aria-hidden="true">'
-            + REFRESH_ICON
-            + '</span><span class="libraryScanButtonText"></span>';
+        button.setAttribute('title', strings.title);
+        button.innerHTML = '<span class="material-icons libraryScanButtonIcon refresh" '
+            + 'aria-hidden="true"></span>';
         button.addEventListener('click', onButtonClick);
 
         els.button = button;
-        els.buttonText = button.querySelector('.libraryScanButtonText');
 
         var overlay = document.createElement('div');
         overlay.className = 'libraryScanOverlay';
@@ -291,8 +288,10 @@
             + '<p class="libraryScanMeta"></p>'
             + '<p class="libraryScanError" hidden></p>'
             + '<div class="libraryScanActions">'
-            + '<button type="button" class="libraryScanAction libraryScanActionPrimary"></button>'
-            + '<button type="button" class="libraryScanAction libraryScanActionClose"></button>'
+            + '<button type="button" tabindex="0" class="libraryScanAction libraryScanActionPrimary">'
+            + '<span class="libraryScanActionLabel"></span></button>'
+            + '<button type="button" tabindex="0" class="libraryScanAction libraryScanActionClose">'
+            + '<span class="libraryScanActionLabel"></span></button>'
             + '</div>'
             + '</div>'
             + '</div>';
@@ -314,6 +313,17 @@
         els.error = overlay.querySelector('.libraryScanError');
         els.primary = overlay.querySelector('.libraryScanActionPrimary');
         els.close = overlay.querySelector('.libraryScanActionClose');
+        els.primaryLabel = els.primary.querySelector('.libraryScanActionLabel');
+        els.closeLabel = els.close.querySelector('.libraryScanActionLabel');
+
+        [els.primary, els.close].forEach(function (button) {
+            button.addEventListener('focus', function () {
+                setPanelButtonFocus(button, true);
+            });
+            button.addEventListener('blur', function () {
+                setPanelButtonFocus(button, false);
+            });
+        });
 
         els.title.textContent = strings.title;
         els.primary.addEventListener('click', function () {
@@ -364,9 +374,10 @@
             label = strings.button;
         }
 
-        els.buttonText.textContent = label;
-        els.button.setAttribute('aria-label', state.error ? strings.title + ' - ' + state.error
-            : strings.title + ' - ' + label);
+        var accessibleLabel = state.error ? strings.title + ' - ' + state.error
+            : strings.title + ' - ' + label;
+        els.button.setAttribute('aria-label', accessibleLabel);
+        els.button.setAttribute('title', accessibleLabel);
     }
 
     function idleStatus(task) {
@@ -484,11 +495,15 @@
         }
 
         els.primary.setAttribute('data-action', action);
-        els.primary.textContent = label;
+        els.primaryLabel.textContent = label;
         els.primary.disabled = disabled;
         els.primary.hidden = action === 'none' && !state.starting && !state.stopping && !running;
         els.primary.classList.toggle('is-danger', action === 'stop');
-        els.close.textContent = strings.close;
+        els.closeLabel.textContent = strings.close;
+
+        if (document.activeElement === els.primary && !els.primary.disabled) {
+            setPanelButtonFocus(els.primary, true);
+        }
 
         // Do not leave focus on a button that just became disabled.
         if (document.activeElement === els.primary && els.primary.disabled) {
@@ -523,15 +538,52 @@
                 // Ignore.
             }
         }
+
+        if (state.panelOpen && document.activeElement === element
+            && (element === els.primary || element === els.close)) {
+            setPanelButtonFocus(element, true);
+        }
+    }
+
+    function setPanelButtonFocus(button, focused) {
+        if (!button) {
+            return;
+        }
+
+        button.classList.toggle('is-focused', focused);
+
+        var properties = ['background-color', 'color'];
+
+        if (!focused) {
+            properties.forEach(function (property) {
+                button.style.removeProperty(property);
+            });
+            return;
+        }
+
+        // Invert only the button's surface and text. Avoid focus boxes, glow,
+        // scaling, or accent colors that look too heavy on the TV.
+        button.style.setProperty('background-color', '#f5f5f5', 'important');
+        button.style.setProperty('color', '#202020', 'important');
     }
 
     function focusPanelAction() {
-        var target = els.primary && !els.primary.hidden && !els.primary.disabled
-            ? els.primary
-            : els.close;
-
         setTimeout(function () {
+            if (!state.panelOpen) {
+                return;
+            }
+
+            // Resolve after the opening action has had a chance to start the
+            // scan and disable the primary button.
+            var target = els.primary && !els.primary.hidden && !els.primary.disabled
+                ? els.primary
+                : els.close;
+
             focusElement(target);
+
+            if (document.activeElement !== target && target !== els.close) {
+                focusElement(els.close);
+            }
         }, 0);
     }
 
@@ -553,6 +605,8 @@
 
         state.panelOpen = false;
         els.overlay.hidden = true;
+        setPanelButtonFocus(els.primary, false);
+        setPanelButtonFocus(els.close, false);
 
         if (els.button && document.contains(els.button)) {
             focusElement(els.button);
@@ -660,19 +714,125 @@
 
         var current = buttons.indexOf(document.activeElement);
         var next = current === -1
-            ? 0
+            ? (direction < 0 ? buttons.length - 1 : 0)
             : (current + direction + buttons.length) % buttons.length;
 
         focusElement(buttons[next]);
     }
 
-    function onKeyDown(event) {
-        if (!state.panelOpen) {
-            return;
+    function moveFocusFromButton(direction, sourceElement) {
+        var selector = 'button:not(:disabled):not([tabindex="-1"]),'
+            + 'a[href]:not([tabindex="-1"]),'
+            + 'input:not([type="range"]):not([type="file"]):not(:disabled):not([tabindex="-1"]),'
+            + 'textarea:not(:disabled):not([tabindex="-1"]),'
+            + 'select:not(:disabled):not([tabindex="-1"]),.focusable';
+        var candidates = document.querySelectorAll(selector);
+        var sourceElement = sourceElement || els.button;
+        var source = sourceElement.getBoundingClientRect();
+        var sourceX = source.left + source.width / 2;
+        var sourceY = source.top + source.height / 2;
+        var nearest = null;
+        var nearestDistance = Infinity;
+
+        for (var i = 0; i < candidates.length; i++) {
+            var candidate = candidates[i];
+
+            if (candidate === sourceElement || candidate.disabled
+                || candidate.getAttribute('tabindex') === '-1'
+                || candidate.offsetParent === null && !candidate.getClientRects().length) {
+                continue;
+            }
+
+            var rect = candidate.getBoundingClientRect();
+
+            if (!rect.width && !rect.height) {
+                continue;
+            }
+
+            var x = rect.left + rect.width / 2;
+            var y = rect.top + rect.height / 2;
+            var primaryDistance;
+            var crossDistance;
+
+            if (direction === 'left' && x < sourceX) {
+                primaryDistance = sourceX - x;
+                crossDistance = Math.abs(sourceY - y);
+            } else if (direction === 'right' && x > sourceX) {
+                primaryDistance = x - sourceX;
+                crossDistance = Math.abs(sourceY - y);
+            } else if (direction === 'up' && y < sourceY) {
+                primaryDistance = sourceY - y;
+                crossDistance = Math.abs(sourceX - x);
+            } else if (direction === 'down' && y > sourceY) {
+                primaryDistance = y - sourceY;
+                crossDistance = Math.abs(sourceX - x);
+            } else {
+                continue;
+            }
+
+            // Prefer elements in the same row/column, as Jellyfin's focus
+            // manager does, while still allowing diagonal transitions.
+            var distance = primaryDistance + crossDistance * 2;
+
+            if (distance < nearestDistance) {
+                nearest = candidate;
+                nearestDistance = distance;
+            }
         }
 
+        return nearest;
+    }
+
+    function getDirection(event) {
+        var key = String(event.key || '').toLowerCase()
+            .replace(/^navigation/, '')
+            .replace(/^arrow/, '');
+        var code = event.keyCode || event.which;
+
+        if (key === 'left' || code === 37) {
+            return 'left';
+        }
+
+        if (key === 'up' || code === 38) {
+            return 'up';
+        }
+
+        if (key === 'right' || code === 39) {
+            return 'right';
+        }
+
+        if (key === 'down' || code === 40) {
+            return 'down';
+        }
+
+        return null;
+    }
+
+    function onKeyDown(event) {
         var key = event.key || '';
         var code = event.keyCode || event.which;
+        var direction = getDirection(event);
+
+        if (!state.panelOpen) {
+            if (direction) {
+                var activeElement = document.activeElement;
+                var nearest = moveFocusFromButton(direction, activeElement);
+
+                // Jellyfin ignores left/right on interactive elements. Handle
+                // only transitions to/from our button; leave other navigation
+                // entirely to Jellyfin's focus manager.
+                if (activeElement === els.button || nearest === els.button) {
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    if (nearest) {
+                        focusElement(nearest);
+                    }
+                }
+            }
+
+            return;
+        }
 
         if (key === 'Escape' || key === 'Back' || code === 27 || code === 10009 || code === 461) {
             event.preventDefault();
@@ -681,12 +841,11 @@
             return;
         }
 
-        if (key === 'ArrowLeft' || key === 'ArrowUp' || key === 'ArrowRight' || key === 'ArrowDown'
-            || code === 37 || code === 38 || code === 39 || code === 40) {
+        if (direction) {
             event.preventDefault();
             event.stopPropagation();
 
-            var backwards = key === 'ArrowLeft' || key === 'ArrowUp' || code === 37 || code === 38;
+            var backwards = direction === 'left' || direction === 'up';
             movePanelFocus(backwards ? -1 : 1);
             return;
         }

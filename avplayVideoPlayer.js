@@ -140,6 +140,47 @@
             : '/info/slot/' + proxy.slot;
     }
 
+    function tsRecordingNameFromOptions(options, currentItem) {
+        var mediaSource = options && options.mediaSource;
+        var item = (options && options.item) || currentItem;
+        var paths = [
+            item && item.Path,
+            mediaSource && mediaSource.Path
+        ];
+
+        for (var i = 0; i < paths.length; i++) {
+            var sourcePath = paths[i] || '';
+            var cleanPath = sourcePath.split(/[?#]/)[0].replace(/\\/g, '/');
+            var fileName = cleanPath.substring(cleanPath.lastIndexOf('/') + 1);
+
+            if (!fileName) {
+                continue;
+            }
+
+            if (/^[a-z][a-z0-9+.-]*:\/\//i.test(sourcePath)) {
+                try {
+                    fileName = decodeURIComponent(fileName);
+                } catch (err) {
+                    // Keep a literal filename if the URL has an invalid escape.
+                }
+            }
+
+            if (!/\.(ts|m2ts|mts|trp)$/i.test(fileName)) {
+                continue;
+            }
+
+            // Ignore Jellyfin's generated /Videos/{id}/stream.ts URL; it is
+            // not the source recording's filename.
+            if (/\/videos\/[^/]+\/stream\.(ts|m2ts|mts|trp)$/i.test(cleanPath)) {
+                continue;
+            }
+
+            return fileName;
+        }
+
+        return null;
+    }
+
     function getVideoCodecs() {
         var codecs = 'h264,hevc,mpeg2video,vc1,msmpeg4v2,vp8,vp9';
 
@@ -692,14 +733,15 @@
             return self._currentPlayOptions.url;
         };
 
-        self.play = function (options) {
+        self.play = function (options, proxyLookupDone, proxyLookupInfo) {
             console.log('[AVPlay] play start', options.playMethod);
 
             var currentItem = options.item
                 || (self.playbackManager && self.playbackManager.currentItem
                     ? self.playbackManager.currentItem()
                     : null);
-            var proxySlot = proxySlotFromItem(currentItem) || self._pendingProxySlot;
+            var proxySlot = proxySlotFromItem(currentItem)
+                || (!currentItem ? self._pendingProxySlot : 0);
 
             if (!proxySlot) {
                 var pathMatch = /\/live\/slot\/(\d+)/.exec(
@@ -707,10 +749,53 @@
                 proxySlot = pathMatch ? parseInt(pathMatch[1], 10) : 0;
             }
 
-            var proxyBase = proxySlot ? proxyBaseFromOptions(options) : null;
+            var recordingName = proxySlot
+                ? null
+                : tsRecordingNameFromOptions(options, currentItem);
+            var proxyBase = (proxySlot || recordingName) ? proxyBaseFromOptions(options) : null;
+            var sameRecordingProxy = recordingName && self._proxy
+                && self._proxy.slot === 0
+                && self._proxy.name === recordingName;
+
+            if (recordingName && proxyBase && !sameRecordingProxy && !proxyLookupDone) {
+                // Jellyfin library recordings normally use AVPlay's native
+                // seekTo. Use the indexed TS proxy only when it confirms this
+                // exact source file exists; otherwise keep Jellyfin playback.
+                var lookupTimer;
+                var lookupTimeout = new Promise(function (resolve) {
+                    lookupTimer = setTimeout(function () {
+                        resolve(null);
+                    }, 1500);
+                });
+                var lookup = fetch(proxyBase + '/info/' + encodeURIComponent(recordingName))
+                    .then(function (response) {
+                        return response.ok ? response.json() : null;
+                    })
+                    .catch(function () {
+                        return null;
+                    });
+
+                return Promise.race([lookup, lookupTimeout])
+                    .then(function (info) {
+                        clearTimeout(lookupTimer);
+                        return self.play(options, true, info);
+                    });
+            }
 
             if (proxySlot && proxyBase) {
                 options = self.prepareProxyOptions(options, proxySlot, proxyBase);
+            } else if (recordingName && proxyBase && (
+                sameRecordingProxy
+                || (proxyLookupDone && proxyLookupInfo
+                    && proxyLookupInfo.name === recordingName)
+            )) {
+                options = self.prepareProxyOptions(
+                    options,
+                    0,
+                    proxyBase,
+                    recordingName,
+                    proxyLookupInfo
+                );
             } else if (self._proxy) {
                 self.stopProxyInfo();
                 self._proxy = null;
@@ -1065,6 +1150,7 @@
             self.stopHlsDuration();
             self.stopProxyInfo();
             self._proxy = null;
+            self._proxyReopenMs = null;
             self._proxySeeking = false;
             self._proxyQueuedSeek = null;
 
@@ -1153,7 +1239,7 @@
             return self._subtitleStreamIndex;
         };
 
-        self.prepareProxyOptions = function (options, slot, base) {
+        self.prepareProxyOptions = function (options, slot, base, recordingName, info) {
             var fromMs = self._proxyReopenMs;
 
             if (fromMs == null) {
@@ -1164,9 +1250,13 @@
 
             self._proxyReopenMs = null;
 
-            var sameSlot = self._proxy && self._proxy.slot === slot;
-            var duration = sameSlot ? self._proxy.durationMs : 0;
-            var name = sameSlot ? self._proxy.name : null;
+            var sameProxy = self._proxy && (slot
+                ? self._proxy.slot === slot
+                : self._proxy.slot === 0 && self._proxy.name === recordingName);
+            var duration = sameProxy
+                ? self._proxy.durationMs
+                : (info && info.durationMs) || 0;
+            var name = recordingName || (sameProxy ? self._proxy.name : null);
 
             self._proxy = {
                 slot: slot,
