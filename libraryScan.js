@@ -31,8 +31,8 @@
     };
 
     var els = {};
-    var floatHost;
     var headerObserver;
+    var headerClassObserver;
     var observedHeader;
 
     function getStrings() {
@@ -184,7 +184,7 @@
     }
 
     function findHeaderRight() {
-        var candidates = document.querySelectorAll('.skinHeader .headerRight, .headerRight');
+        var candidates = document.querySelectorAll('.skinHeader .headerRight');
 
         for (var i = 0; i < candidates.length; i++) {
             if (isVisible(candidates[i])) {
@@ -193,6 +193,35 @@
         }
 
         return null;
+    }
+
+    // Video playback reuses the skin header as the OSD header and hides it
+    // when the OSD times out. Keep the scan control out of the way entirely
+    // while a video, queue, or playback view is active.
+    function isPlaybackActive() {
+        var hash = '';
+
+        try {
+            hash = String(location.hash || '');
+        } catch (err) {
+            // Ignore.
+        }
+
+        if (hash.indexOf('/video') !== -1
+            || hash.indexOf('/queue') !== -1
+            || hash.indexOf('/playback') !== -1) {
+            return true;
+        }
+
+        var header = document.querySelector('.skinHeader');
+
+        if (header && header.classList && header.classList.contains('osdHeader')) {
+            return true;
+        }
+
+        var osd = document.getElementById('videoOsdPage');
+
+        return !!(osd && osd.offsetParent !== null);
     }
 
     function watchHeader() {
@@ -207,24 +236,37 @@
             headerObserver = null;
         }
 
+        if (headerClassObserver) {
+            headerClassObserver.disconnect();
+            headerClassObserver = null;
+        }
+
         observedHeader = header;
 
         if (!header || typeof MutationObserver === 'undefined') {
             return;
         }
 
+        // jellyfin-web redraws the header by replacing its innerHTML.
         headerObserver = new MutationObserver(function () {
-            attachButton();
+            render();
         });
-
-        // jellyfin-web redraws the header by replacing its innerHTML. Move the
-        // button back as soon as that happens.
         headerObserver.observe(header, { childList: true, subtree: true });
+
+        // OSD entry/exit toggles classes on the header element only. Observe
+        // attributes without the subtree to avoid reacting to every button.
+        headerClassObserver = new MutationObserver(function () {
+            render();
+        });
+        headerClassObserver.observe(header, {
+            attributes: true,
+            attributeFilter: ['class', 'style']
+        });
     }
 
     function attachButton() {
         if (!els.button) {
-            return;
+            return false;
         }
 
         watchHeader();
@@ -236,25 +278,18 @@
                 headerRight.insertBefore(els.button, headerRight.firstChild);
             }
 
-            if (floatHost && floatHost.parentNode) {
-                floatHost.parentNode.removeChild(floatHost);
-            }
-
-            return;
+            return true;
         }
 
-        if (!floatHost) {
-            floatHost = document.createElement('div');
-            floatHost.className = 'libraryScanFloat';
-        }
+        // If the header is briefly hidden, leave the button inside it so it
+        // disappears with the header. Never move it to a fixed overlay: that
+        // would put it above the video OSD and steal remote focus.
+        var parent = els.button.parentNode;
 
-        if (floatHost.parentNode !== document.body) {
-            document.body.appendChild(floatHost);
-        }
-
-        if (els.button.parentNode !== floatHost) {
-            floatHost.appendChild(els.button);
-        }
+        return !!(parent
+            && parent.classList
+            && parent.classList.contains('headerRight')
+            && document.contains(parent));
     }
 
     function createElements() {
@@ -346,8 +381,8 @@
             return;
         }
 
-        attachButton();
-        els.button.hidden = false;
+        var attached = attachButton();
+        els.button.hidden = !attached || isPlaybackActive();
     }
 
     function renderButton() {
@@ -516,6 +551,15 @@
             return;
         }
 
+        if (isPlaybackActive()) {
+            if (state.panelOpen) {
+                closePanel(false);
+            }
+
+            els.button.hidden = true;
+            return;
+        }
+
         updateVisibility();
         renderButton();
 
@@ -598,7 +642,7 @@
         focusPanelAction();
     }
 
-    function closePanel() {
+    function closePanel(restoreFocus) {
         if (!state.panelOpen) {
             return;
         }
@@ -608,7 +652,10 @@
         setPanelButtonFocus(els.primary, false);
         setPanelButtonFocus(els.close, false);
 
-        if (els.button && document.contains(els.button)) {
+        if (restoreFocus !== false
+            && els.button
+            && document.contains(els.button)
+            && !els.button.hidden) {
             focusElement(els.button);
         }
     }
@@ -814,14 +861,21 @@
         var direction = getDirection(event);
 
         if (!state.panelOpen) {
+            // Leave all remote input to Jellyfin's video OSD while playing.
+            if (isPlaybackActive()) {
+                return;
+            }
+
             if (direction) {
                 var activeElement = document.activeElement;
                 var nearest = moveFocusFromButton(direction, activeElement);
+                var inHeader = !!(els.button.parentNode
+                    && els.button.parentNode.contains(activeElement));
 
                 // Jellyfin ignores left/right on interactive elements. Handle
-                // only transitions to/from our button; leave other navigation
-                // entirely to Jellyfin's focus manager.
-                if (activeElement === els.button || nearest === els.button) {
+                // only transitions to/from our button inside the header; leave
+                // all other navigation to Jellyfin's focus manager.
+                if (activeElement === els.button || (inHeader && nearest === els.button)) {
                     event.preventDefault();
                     event.stopPropagation();
 
@@ -1030,18 +1084,27 @@
         }
 
         createElements();
-        attachButton();
+        render();
 
         document.addEventListener('keydown', onKeyDown, true);
         document.addEventListener('visibilitychange', function () {
             if (!document.hidden) {
+                render();
                 pollNow(0);
             }
         });
         window.addEventListener('hashchange', function () {
+            render();
             pollNow(100);
         });
-        window.addEventListener('resize', attachButton);
+        window.addEventListener('viewshow', function () {
+            render();
+            pollNow(100);
+        });
+        window.addEventListener('viewbeforehide', function () {
+            setTimeout(render, 0);
+        });
+        window.addEventListener('resize', render);
 
         pollNow(0);
     }

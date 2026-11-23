@@ -175,6 +175,9 @@
   - 포커스/blur 이벤트에서 배경색·글자색·외곽선을 직접 설정·해제
 - 0.3.38: 포커스 외곽 상자와 강한 포인트색 제거
   - 기본 버튼을 무채색 계열로 정리하고, 포커스 시 면색과 글자색만 반전
+- 0.3.39: 동영상 재생 중 라이브러리 스캔 버튼이 OSD 위에 남던 문제 수정
+  - 헤더가 숨겨질 때 버튼을 고정 레이어로 옮기지 않고 헤더와 함께 숨김
+  - 영상·대기열 재생 화면에서는 스캔 버튼과 리모컨 키 처리를 비활성화
 
 ---
 
@@ -189,7 +192,7 @@
 | 주입 | `gulpfile.babel.js`가 `tizen.js`, `avplayVideoPlayer.js`, `libraryScan.js`, `$WEBAPIS/webapis/webapis.js`, CSP를 `index.html`에 삽입 |
 | 웹 | jellyfin-web `release-12.z` (12.3.0, 서버 12.3과 일치) |
 | 패키징 | `config.xml` 1개, `icon.png`, `www/` |
-| 버전 | `0.3.38` (`config.xml`, `package.json`) |
+| 버전 | `0.3.39` (`config.xml`, `package.json`) |
 
 `tizen.js`는 10.8 시절 코드가 일부 남아 있다. 예를 들어
 `enableMkvProgressive` 옵션은 10.10의 `browserDeviceProfile.js`에서 더 이상 읽지 않는다(dead option).

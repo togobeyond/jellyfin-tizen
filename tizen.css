@@ -68,11 +68,9 @@ body.hide-scroll .avplayVideoPlayer {
     animation: libraryScanSpin 1.1s linear infinite;
 }
 
-.libraryScanFloat {
-    position: fixed;
-    top: 0.8rem;
-    right: 1.2rem;
-    z-index: 1000;
+/* Defensive guard: the button must never sit above the video OSD. */
+.skinHeader.osdHeader .libraryScanButton {
+    display: none !important;
 }
 
 .libraryScanOverlay {
