@@ -1368,6 +1368,7 @@
 
                     self._proxyReopenMs = info.startMs;
                     self._proxyLastStartMs = info.startMs;
+                    proxy.lastOffset = info.offset;
 
                     try {
                         safeStop();
@@ -1400,6 +1401,7 @@
                     postDebug('seek-error', {
                         target: milliseconds,
                         startMs: self._proxyLastStartMs,
+                        offset: proxy.lastOffset,
                         retries: self._proxySeekRetries,
                         error: (err && (err.type || err.message)) || String(err)
                     });
@@ -1411,10 +1413,16 @@
                         console.warn('[AVPlay] proxy close after failure failed', closeError);
                     }
 
-                    if (self._proxySeekRetries < 2 && self._proxyLastStartMs != null) {
+                    if (self._proxySeekRetries < 3 && self._proxyLastStartMs != null) {
                         self._proxySeekRetries += 1;
 
-                        var retryTarget = Math.max(0, self._proxyLastStartMs - 15000);
+                        // Step further back each time: a single GOP boundary is
+                        // sometimes rejected by AVPlay, so the next attempt
+                        // lands on an earlier, cleaner position.
+                        var retryTarget = Math.max(
+                            0,
+                            self._proxyLastStartMs - (15000 * self._proxySeekRetries)
+                        );
 
                         postDebug('seek-retry', {
                             startMs: self._proxyLastStartMs,

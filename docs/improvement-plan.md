@@ -178,6 +178,10 @@
 - 0.3.39: 동영상 재생 중 라이브러리 스캔 버튼이 OSD 위에 남던 문제 수정
   - 헤더가 숨겨질 때 버튼을 고정 레이어로 옮기지 않고 헤더와 함께 숨김
   - 영상·대기열 재생 화면에서는 스캔 버튼과 리모컨 키 처리를 비활성화
++- 0.3.40: 프록시 녹화 탐색 실패 시 복구 강화
+  - 탐색 실패 재시도를 최대 3회, 매번 15초씩 더 뒤로 이동
+  - 디버그 beacon에 실제 시작 바이트 오프셋 기록
+  - 프록시: `from=`에도 3초 프롤롤 적용, PAT(PSI)를 키프레임 앞에 먼저 전송
 
 ---
 
@@ -192,7 +196,7 @@
 | 주입 | `gulpfile.babel.js`가 `tizen.js`, `avplayVideoPlayer.js`, `libraryScan.js`, `$WEBAPIS/webapis/webapis.js`, CSP를 `index.html`에 삽입 |
 | 웹 | jellyfin-web `release-12.z` (12.3.0, 서버 12.3과 일치) |
 | 패키징 | `config.xml` 1개, `icon.png`, `www/` |
-| 버전 | `0.3.39` (`config.xml`, `package.json`) |
+| 버전 | `0.3.40` (`config.xml`, `package.json`) |
 
 `tizen.js`는 10.8 시절 코드가 일부 남아 있다. 예를 들어
 `enableMkvProgressive` 옵션은 10.10의 `browserDeviceProfile.js`에서 더 이상 읽지 않는다(dead option).
